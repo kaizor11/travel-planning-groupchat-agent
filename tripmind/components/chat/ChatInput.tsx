@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, KeyboardEvent } from "react";
-import { Button } from "@/components/ui/button";
+import { useState, KeyboardEvent, useRef, useEffect } from "react";
 import { addMessage } from "@/lib/firestore/trips";
+import { Plus, ArrowUp } from "lucide-react";
 
 const URL_REGEX = /https?:\/\/[^\s]+/;
 
@@ -14,6 +14,17 @@ interface ChatInputProps {
 export function ChatInput({ tripId, currentUserId }: ChatInputProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-grow textarea
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "22px";
+    el.style.height = Math.min(el.scrollHeight, 120) + "px";
+  }, [text]);
+
+  const hasText = text.trim().length > 0;
 
   async function handleSend() {
     const trimmed = text.trim();
@@ -21,29 +32,35 @@ export function ChatInput({ tripId, currentUserId }: ChatInputProps) {
 
     setSending(true);
     setText("");
+    if (textareaRef.current) textareaRef.current.style.height = "22px";
 
     try {
-      // Write the user's message to Firestore first
       const urlMatch = trimmed.match(URL_REGEX);
-      await addMessage(tripId, {
+      const msg: Parameters<typeof addMessage>[1] = {
         senderId: currentUserId,
         text: trimmed,
         type: "user",
-        attachedUrl: urlMatch?.[0],
-      });
+      };
+      if (urlMatch) msg.attachedUrl = urlMatch[0];
+      await addMessage(tripId, msg);
 
-      // If a URL was detected, trigger AI parsing
       if (urlMatch) {
-        await fetch("/api/ai/parse-content", {
+        const res = await fetch("/api/ai/parse-content", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             url: urlMatch[0],
-            text: trimmed !== urlMatch[0] ? trimmed.replace(urlMatch[0], "").trim() : undefined,
+            text:
+              trimmed !== urlMatch[0]
+                ? trimmed.replace(urlMatch[0], "").trim()
+                : undefined,
             tripId,
             senderId: currentUserId,
           }),
         });
+        if (!res.ok) {
+          console.error("[parse-content] failed:", await res.text());
+        }
       }
     } finally {
       setSending(false);
@@ -58,24 +75,40 @@ export function ChatInput({ tripId, currentUserId }: ChatInputProps) {
   }
 
   return (
-    <div className="border-t border-border px-4 py-3 flex gap-2 items-end">
-      <textarea
-        className="flex-1 resize-none rounded-xl border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring min-h-[40px] max-h-32"
-        placeholder="Message or drop a travel link…"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={handleKeyDown}
-        rows={1}
-        disabled={sending}
-      />
-      <Button
-        size="sm"
+    <div className="im-input-bar">
+      {/* + / Apps button */}
+      <button className="im-app-btn" aria-label="More">
+        <Plus size={22} strokeWidth={2} />
+      </button>
+
+      {/* Pill input */}
+      <div className="im-input-pill">
+        <textarea
+          ref={textareaRef}
+          rows={1}
+          placeholder="iMessage"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={sending}
+          style={{ height: 22 }}
+        />
+      </div>
+
+      {/* Send button */}
+      <button
+        className={`im-send-btn ${hasText && !sending ? "active" : "inactive"}`}
         onClick={handleSend}
-        disabled={!text.trim() || sending}
-        className="shrink-0"
+        disabled={!hasText || sending}
+        aria-label="Send"
       >
-        Send
-      </Button>
+        <ArrowUp
+          size={17}
+          strokeWidth={3}
+          color="#fff"
+          style={{ marginTop: 1 }}
+        />
+      </button>
     </div>
   );
 }
