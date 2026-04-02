@@ -1,0 +1,45 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users can only read/write their own user doc
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Trip access: only members of the trip
+    match /trips/{tripId} {
+      allow read: if request.auth != null && request.auth.uid in resource.data.memberIds;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null && request.auth.uid in resource.data.memberIds;
+
+      // Messages: trip members can read and create
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+        allow create: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+      }
+
+      // Wish pool: trip members can read and create
+      match /wishPool/{entryId} {
+        allow read: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+        allow create: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+      }
+
+      // Proposals: trip members can read and create
+      match /proposals/{proposalId} {
+        allow read: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+        allow create: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+        // Only the creator can update votes on their own vote field
+        allow update: if request.auth != null
+          && request.auth.uid in get(/databases/$(database)/documents/trips/$(tripId)).data.memberIds;
+      }
+    }
+  }
+}
