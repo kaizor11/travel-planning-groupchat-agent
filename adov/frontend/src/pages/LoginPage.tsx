@@ -77,7 +77,7 @@ export default function LoginPage() {
           fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif',
         }}
       >
-        TripMind
+        Adov
       </h1>
       <p
         style={{

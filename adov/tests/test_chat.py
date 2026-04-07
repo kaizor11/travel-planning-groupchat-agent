@@ -28,9 +28,9 @@ class TestPageLoad:
         assert "/trips/" in page.url
         screenshot("01_page_load")
 
-    def test_tripmind_header_visible(self, page):
-        """'TripMind' label should appear in the header"""
-        assert page.locator("text=TripMind").first.is_visible()
+    def test_adov_header_visible(self, page):
+        """'Adov' label should appear in the header"""
+        assert page.locator("text=Adov").first.is_visible()
 
     def test_trip_id_in_header(self, page):
         """The trip ID should appear as a subtitle in the header"""

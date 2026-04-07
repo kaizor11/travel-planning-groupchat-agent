@@ -49,7 +49,7 @@ export default function ChatHeader({ tripId, onProfileOpen }: ChatHeaderProps) {
             />
           </div>
           <div className="flex flex-col items-center leading-tight">
-            <span className="font-semibold tracking-tight text-black" style={{ fontSize: '13px' }}>TripMind</span>
+            <span className="font-semibold tracking-tight text-black" style={{ fontSize: '13px' }}>Adov</span>
             <span style={{ fontSize: '11px', color: '#8E8E93' }}>Group · {tripId}</span>
           </div>
         </div>

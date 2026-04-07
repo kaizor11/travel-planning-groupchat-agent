@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routes import ai, calendar, chat, users
 
-app = FastAPI(title="TripMind")
+app = FastAPI(title="Adov")
 
 _origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 # FRONTEND_URL is set on Render to the Vercel deployment URL (e.g. https://tripmind.vercel.app)
