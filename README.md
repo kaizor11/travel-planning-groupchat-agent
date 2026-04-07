@@ -4,13 +4,13 @@ A pre-trip coordination tool where an AI agent helps groups align on travel pref
 
 ## Stack
 
-**Backend** — `tripmind-python/backend/`
+**Backend** — `adov/backend/`
 - Python 3.11+ with FastAPI + Uvicorn
 - Firebase Admin SDK (Firestore, server-side only)
 - Anthropic Claude API (`claude-sonnet-4-6`) for content parsing and proposal generation
 - Server-Sent Events (SSE) for real-time message streaming
 
-**Frontend** — `tripmind-python/frontend/`
+**Frontend** — `adov/frontend/`
 - React 18 + TypeScript + Vite
 - TailwindCSS with an iMessage-style design system
 - React Router v6
@@ -19,12 +19,12 @@ A pre-trip coordination tool where an AI agent helps groups align on travel pref
 
 ## Setup & Running
 
-All commands run from `tripmind-python/`.
+All commands run from `adov/`.
 
 ### 1. Python environment
 
 ```bash
-cd tripmind-python/backend
+cd adov/backend
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 ### 2. Environment variables
 
-Create `tripmind-python/backend/.env`:
+Create `adov/backend/.env`:
 
 ```
 ANTHROPIC_API_KEY=sk-...
@@ -55,7 +55,7 @@ FIREBASE_ADMIN_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE K
 ### 3. Frontend dependencies
 
 ```bash
-cd tripmind-python
+cd adov
 npm run setup        # installs frontend node_modules
 ```
 
@@ -73,7 +73,7 @@ npm run setup        # installs frontend node_modules
 ### 4. Run the app
 
 ```bash
-# From tripmind-python/ — starts backend (:8000) and frontend (:5173) concurrently
+# From adov/ — starts backend (:8000) and frontend (:5173) concurrently
 npm run dev
 
 # Backend only
@@ -88,7 +88,7 @@ Open [http://localhost:5173](http://localhost:5173).
 ### 5. Run tests (optional)
 
 ```bash
-# From tripmind-python/
+# From adov/
 npm run test           # Playwright + pytest, headless
 npm run test:headed    # Same, with browser visible
 ```
