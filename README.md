@@ -1,4 +1,4 @@
-# AI Group Travel Coordinator
+# AI Group Travel Coordinator - Adov
 
 A pre-trip coordination tool where an AI agent helps groups align on travel preferences, availability, and budget before anyone opens a booking site.
 
