@@ -16,8 +16,9 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [showProfile, setShowProfile] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
-  // Ref so the SSE closure always reads the latest currentUserId without re-subscribing
+  // Refs so SSE closures always read the latest values without re-subscribing
   const currentUserIdRef = useRef('')
+  const idTokenRef = useRef<string | null>(null)
 
   const currentUserId = user?.uid ?? ''
 
@@ -28,16 +29,22 @@ export default function ChatPage() {
   // Load initial messages from backend (requires auth)
   useEffect(() => {
     if (!tripId || !idToken) return
-    getMessages(tripId, idToken).then(({ messages: msgs }) => {
-      setMessages(msgs)
-      currentUserIdRef.current = user?.uid ?? ''
-    })
+    getMessages(tripId, idToken)
+      .then(({ messages: msgs }) => {
+        setMessages(msgs)
+        currentUserIdRef.current = user?.uid ?? ''
+      })
+      .catch(err => console.error('[ChatPage] initial messages fetch failed:', err))
   }, [tripId, idToken, user?.uid])
 
-  // Keep ref in sync with user changes
+  // Keep refs in sync without triggering SSE re-subscription
   useEffect(() => {
     currentUserIdRef.current = currentUserId
   }, [currentUserId])
+
+  useEffect(() => {
+    idTokenRef.current = idToken
+  }, [idToken])
 
   // Scroll to bottom whenever messages change
   useEffect(() => {
@@ -70,6 +77,15 @@ export default function ChatPage() {
       source.onerror = (e) => {
         console.error('[SSE] connection error:', e)
         source.close()
+        // Re-fetch the full message list to pick up messages sent while disconnected.
+        // The reconnected SSE generator pre-marks all existing docs as seen and won't
+        // re-emit them, so a fresh fetch is the only way to recover missed messages.
+        const token = idTokenRef.current
+        if (tripId && token) {
+          getMessages(tripId, token)
+            .then(({ messages: msgs }) => setMessages(msgs))
+            .catch(err => console.error('[SSE] refetch after reconnect failed:', err))
+        }
         retryTimer = setTimeout(connect, 2000)
       }
     }

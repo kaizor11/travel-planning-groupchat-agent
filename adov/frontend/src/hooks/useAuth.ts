@@ -28,5 +28,22 @@ export function useAuth(): AuthState {
     return unsubscribe
   }, [])
 
+  // Firebase ID tokens expire after 1 hour. Refresh every 55 minutes so API
+  // calls always carry a valid token even after long idle sessions.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const currentUser = auth.currentUser
+      if (currentUser) {
+        try {
+          const token = await currentUser.getIdToken(/* forceRefresh */ true)
+          setIdToken(token)
+        } catch (err) {
+          console.error('[useAuth] token refresh failed:', err)
+        }
+      }
+    }, 55 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
+
   return { user, loading, idToken }
 }
