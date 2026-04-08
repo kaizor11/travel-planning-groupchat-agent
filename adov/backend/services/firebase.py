@@ -197,6 +197,21 @@ def get_trip_members(trip_id: str) -> list[str]:
     return trip.get("memberIds", [])
 
 
+def get_trip_member_status(trip_id: str) -> list[dict]:
+    """Return name + calendarConnected for each human member of a trip."""
+    member_ids = get_trip_members(trip_id)
+    result = []
+    for uid in member_ids:
+        user = get_user(uid)
+        if not user:
+            continue
+        result.append({
+            "name": user.get("name") or uid,
+            "calendarConnected": bool(user.get("googleCalendarToken")),
+        })
+    return result
+
+
 def store_trip_availability(trip_id: str, windows: list[dict]) -> None:
     """Persist free/busy overlap windows onto the trip document."""
     db = get_db()

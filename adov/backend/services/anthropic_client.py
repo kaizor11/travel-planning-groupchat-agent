@@ -21,10 +21,15 @@ def _strip_code_fences(raw: str) -> str:
     return re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE).rstrip("` \n")
 
 
-def get_chat_response(messages_context: list[dict], sender_name: str) -> str:
+def get_chat_response(
+    messages_context: list[dict],
+    sender_name: str,
+    members: list[dict] | None = None,
+) -> str:
     """
     Generate a conversational reply to an @adov mention.
     messages_context: recent messages ordered oldest-first, each with senderId/senderName/text/type.
+    members: list of {name, calendarConnected} for each human trip member (optional).
     Returns the AI reply text.
     """
     # Build alternating-role turns from chat history
@@ -48,10 +53,28 @@ def get_chat_response(messages_context: list[dict], sender_name: str) -> str:
     if not merged or merged[-1]["role"] != "user":
         merged.append({"role": "user", "content": f"[{sender_name}] mentioned you."})
 
+    # Inject ground-truth member calendar status so Claude never guesses
+    system = AGENT_CONTEXT
+    if members:
+        connected = [m["name"] for m in members if m["calendarConnected"]]
+        not_connected = [m["name"] for m in members if not m["calendarConnected"]]
+        lines = [
+            "\n\n[MEMBER CALENDAR STATUS — treat this as ground truth, never guess or infer differently:]",
+        ]
+        if connected:
+            lines.append(f"Calendar connected: {', '.join(connected)}")
+        if not_connected:
+            lines.append(f"Calendar not connected: {', '.join(not_connected)}")
+        lines.append(
+            "You are the AI assistant (adov). You are not a trip member and do not have a calendar. "
+            "Never ask yourself to connect a calendar."
+        )
+        system = AGENT_CONTEXT + "\n".join(lines)
+
     message = get_client().messages.create(
         model="claude-sonnet-4-6",
         max_tokens=500,
-        system=AGENT_CONTEXT,
+        system=system,
         messages=merged,
     )
     return message.content[0].text.strip() if message.content else ""

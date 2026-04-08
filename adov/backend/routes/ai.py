@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services.anthropic_client import extract_preference, get_chat_response, parse_travel_content
-from services.firebase import add_message, get_db, get_recent_messages, upsert_user_preference
+from services.firebase import add_message, get_db, get_recent_messages, get_trip_member_status, upsert_user_preference
 from firebase_admin import firestore
 
 router = APIRouter()
@@ -31,8 +31,10 @@ async def handle_mention(trip_id: str, sender_name: str) -> None:
     """Fetch recent context, call Claude, write an AI reply to the chat."""
     loop = asyncio.get_running_loop()
     try:
-        msgs = await loop.run_in_executor(None, lambda: get_recent_messages(trip_id, 10))
-        reply = await loop.run_in_executor(None, lambda: get_chat_response(msgs, sender_name))
+        msgs_future = loop.run_in_executor(None, lambda: get_recent_messages(trip_id, 10))
+        members_future = loop.run_in_executor(None, lambda: get_trip_member_status(trip_id))
+        msgs, members = await asyncio.gather(msgs_future, members_future)
+        reply = await loop.run_in_executor(None, lambda: get_chat_response(msgs, sender_name, members))
         if reply:
             add_message(trip_id, {"senderId": "ai", "text": reply, "type": "ai"})
     except Exception as exc:
