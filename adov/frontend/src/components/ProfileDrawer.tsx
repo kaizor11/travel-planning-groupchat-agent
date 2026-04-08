@@ -23,16 +23,41 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
   const [calendarConnected, setCalendarConnected] = useState<boolean | null>(null)
   const [calendarConnecting, setCalendarConnecting] = useState(false)
   const [calendarError, setCalendarError] = useState<string | null>(null)
+  const [profileLoadError, setProfileLoadError] = useState(false)
 
-  // Load existing profile on mount
-  useEffect(() => {
-    getProfile(idToken).then(profile => {
+  const loadProfile = async (token: string) => {
+    setProfileLoadError(false)
+    setCalendarConnected(null)
+    try {
+      const profile = await getProfile(token)
       if (profile.budgetMin != null) setBudgetMin(String(profile.budgetMin))
       if (profile.budgetMax != null) setBudgetMax(String(profile.budgetMax))
       if (profile.preferences) setPreferences(profile.preferences)
       setCalendarConnected(profile.calendarConnected ?? false)
-    }).catch(() => { /* ignore — first time user */ })
+    } catch {
+      setProfileLoadError(true)
+      setCalendarConnected(false)
+    }
+  }
+
+  // Load existing profile on mount (or when token refreshes)
+  useEffect(() => {
+    loadProfile(idToken)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idToken])
+
+  const handleRetryProfile = async () => {
+    // Force-refresh token before retrying in case the cause was token expiry
+    try {
+      const { auth: firebaseAuth } = await import('../lib/firebase')
+      const freshToken = await firebaseAuth.currentUser?.getIdToken(true)
+      if (freshToken) {
+        await loadProfile(freshToken)
+        return
+      }
+    } catch { /* fall through to retry with current token */ }
+    await loadProfile(idToken)
+  }
 
   const handleConnectCalendar = async () => {
     setCalendarConnecting(true)
@@ -40,12 +65,14 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
     try {
       const result = await signInWithPopup(auth, googleProvider)
       const credential = GoogleAuthProvider.credentialFromResult(result)
-      const freshIdToken = await result.user.getIdToken()
+      const freshIdToken = await result.user.getIdToken(/* forceRefresh */ true)
       if (!credential?.accessToken) {
         setCalendarError('No calendar token returned. Try signing out and back in.')
         return
       }
       await updateCalendarToken(credential.accessToken, freshIdToken)
+      // Set directly — don't rely on the useEffect re-fetching, which could race
+      // against this write and briefly show "Not connected".
       setCalendarConnected(true)
     } catch {
       setCalendarError('Failed to connect calendar. Try again.')
@@ -167,34 +194,52 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: '5px',
                   fontSize: '13px',
-                  color: calendarConnected ? '#34C759' : '#FF9500',
+                  color: calendarConnected === null
+                    ? '#8E8E93'
+                    : calendarConnected ? '#34C759' : '#FF9500',
                   fontWeight: '500',
                 }}
               >
-                <span style={{ fontSize: '10px' }}>
-                  {calendarConnected === null ? '…' : calendarConnected ? '●' : '●'}
-                </span>
+                <span style={{ fontSize: '10px' }}>●</span>
                 {calendarConnected === null ? 'Checking…' : calendarConnected ? 'Connected' : 'Not connected'}
               </span>
-              <button
-                onClick={handleConnectCalendar}
-                disabled={calendarConnecting}
-                style={{
-                  marginLeft: 'auto',
-                  padding: '7px 14px', borderRadius: '8px', border: 'none',
-                  background: calendarConnected ? '#F2F2F7' : '#007AFF',
-                  color: calendarConnected ? '#3C3C43' : '#fff',
-                  fontSize: '13px', fontWeight: '600',
-                  cursor: calendarConnecting ? 'default' : 'pointer',
-                  opacity: calendarConnecting ? 0.6 : 1,
-                }}
-              >
-                {calendarConnecting ? 'Connecting…' : calendarConnected ? 'Reconnect' : 'Connect'}
-              </button>
+              <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+                {profileLoadError && (
+                  <button
+                    onClick={handleRetryProfile}
+                    style={{
+                      padding: '7px 12px', borderRadius: '8px', border: 'none',
+                      background: '#F2F2F7', color: '#FF3B30',
+                      fontSize: '13px', fontWeight: '600', cursor: 'pointer',
+                    }}
+                  >
+                    Retry
+                  </button>
+                )}
+                <button
+                  onClick={handleConnectCalendar}
+                  disabled={calendarConnecting}
+                  style={{
+                    padding: '7px 14px', borderRadius: '8px', border: 'none',
+                    background: calendarConnected ? '#F2F2F7' : '#007AFF',
+                    color: calendarConnected ? '#3C3C43' : '#fff',
+                    fontSize: '13px', fontWeight: '600',
+                    cursor: calendarConnecting ? 'default' : 'pointer',
+                    opacity: calendarConnecting ? 0.6 : 1,
+                  }}
+                >
+                  {calendarConnecting ? 'Connecting…' : calendarConnected ? 'Reconnect' : 'Connect'}
+                </button>
+              </div>
             </div>
             {calendarError && (
               <p style={{ fontSize: '12px', color: '#FF3B30', margin: '8px 0 0' }}>
                 {calendarError}
+              </p>
+            )}
+            {profileLoadError && !calendarError && (
+              <p style={{ fontSize: '12px', color: '#FF9500', margin: '8px 0 0' }}>
+                Could not load profile — server may be waking up. Tap Retry.
               </p>
             )}
           </div>
