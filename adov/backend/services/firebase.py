@@ -227,42 +227,57 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
     Polls Firestore every second for new messages and yields raw SSE-formatted strings.
     Uses StreamingResponse (not sse_starlette) to avoid any library version issues.
     Format: "data: <json>\\n\\n"
+
+    Read cost optimization: pre-populates seen_ids and captures the latest timestamp,
+    then polls only for messages AFTER that timestamp. An empty poll costs 1 read
+    instead of N (total message count), which prevents quota exhaustion during testing.
     """
     print(f"[SSE] stream_messages started for trip {trip_id}")
     try:
         db = get_db()
         loop = asyncio.get_running_loop()
         seen_ids: set[str] = set()
+        last_ts = None  # raw Firestore timestamp for incremental filtering
 
-        # Pre-populate seen_ids so we don't re-emit messages from before the stream opened
+        # Pre-populate seen_ids and capture the latest timestamp for incremental queries
         try:
             initial = await loop.run_in_executor(
                 None,
                 lambda: list(
                     db.collection("trips").document(trip_id)
-                    .collection("messages").stream()
+                    .collection("messages").order_by("timestamp").stream()
                 ),
             )
             for doc in initial:
                 seen_ids.add(doc.id)
-            print(f"[SSE] pre-populated {len(seen_ids)} seen IDs")
+                raw_ts = (doc.to_dict() or {}).get("timestamp")
+                if raw_ts is not None:
+                    last_ts = raw_ts
+            print(f"[SSE] pre-populated {len(seen_ids)} seen IDs, last_ts={last_ts}")
         except Exception as exc:
             print(f"[SSE] initial fetch error: {exc}")
 
-        # Poll every second — no threading bridge, no on_snapshot, no asyncio.Queue
+        # Poll every second — only fetch messages newer than last_ts to minimize reads
         while True:
             await asyncio.sleep(1)
             try:
-                docs = await loop.run_in_executor(
-                    None,
-                    lambda: list(
-                        db.collection("trips").document(trip_id)
-                        .collection("messages").order_by("timestamp").stream()
-                    ),
-                )
+                current_ts = last_ts  # capture for closure (avoids late-binding issue)
+
+                def fetch_new(ts=current_ts):
+                    q = db.collection("trips").document(trip_id).collection("messages")
+                    if ts is not None:
+                        q = q.where("timestamp", ">", ts).order_by("timestamp")
+                    else:
+                        q = q.order_by("timestamp")
+                    return list(q.stream())
+
+                docs = await loop.run_in_executor(None, fetch_new)
                 for doc in docs:
                     if doc.id not in seen_ids:
                         seen_ids.add(doc.id)
+                        raw_ts = (doc.to_dict() or {}).get("timestamp")
+                        if raw_ts is not None:
+                            last_ts = raw_ts
                         data = _doc_to_dict(doc)
                         try:
                             payload = json.dumps(data)
