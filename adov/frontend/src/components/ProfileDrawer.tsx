@@ -2,7 +2,9 @@
 // Budget data is stored server-side and NEVER shared with other group members.
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
-import { getProfile, updateProfile } from '../api/client'
+import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth'
+import { auth, googleProvider } from '../lib/firebase'
+import { getProfile, updateProfile, updateCalendarToken } from '../api/client'
 
 const PREFERENCE_TAGS = ['beach', 'hiking', 'city', 'adventure', 'culture', 'food', 'relaxation', 'nightlife', 'nature', 'ski']
 
@@ -18,6 +20,9 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
   const [preferences, setPreferences] = useState<string[]>([])
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [calendarConnected, setCalendarConnected] = useState<boolean | null>(null)
+  const [calendarConnecting, setCalendarConnecting] = useState(false)
+  const [calendarError, setCalendarError] = useState<string | null>(null)
 
   // Load existing profile on mount
   useEffect(() => {
@@ -25,8 +30,29 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
       if (profile.budgetMin != null) setBudgetMin(String(profile.budgetMin))
       if (profile.budgetMax != null) setBudgetMax(String(profile.budgetMax))
       if (profile.preferences) setPreferences(profile.preferences)
+      setCalendarConnected(profile.calendarConnected ?? false)
     }).catch(() => { /* ignore — first time user */ })
   }, [idToken])
+
+  const handleConnectCalendar = async () => {
+    setCalendarConnecting(true)
+    setCalendarError(null)
+    try {
+      const result = await signInWithPopup(auth, googleProvider)
+      const credential = GoogleAuthProvider.credentialFromResult(result)
+      const freshIdToken = await result.user.getIdToken()
+      if (!credential?.accessToken) {
+        setCalendarError('No calendar token returned. Try signing out and back in.')
+        return
+      }
+      await updateCalendarToken(credential.accessToken, freshIdToken)
+      setCalendarConnected(true)
+    } catch {
+      setCalendarError('Failed to connect calendar. Try again.')
+    } finally {
+      setCalendarConnecting(false)
+    }
+  }
 
   const togglePreference = (tag: string) => {
     setPreferences(prev =>
@@ -122,6 +148,56 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
 
         {/* Content */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '20px 16px' }}>
+
+          {/* Google Calendar section */}
+          <div
+            style={{
+              background: '#fff', borderRadius: '12px',
+              padding: '16px', marginBottom: '16px',
+            }}
+          >
+            <p style={{ fontSize: '13px', fontWeight: '600', color: '#000', margin: '0 0 4px' }}>
+              Google Calendar
+            </p>
+            <p style={{ fontSize: '12px', color: '#8E8E93', margin: '0 0 12px' }}>
+              Read-only — we only see free/busy times
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '5px',
+                  fontSize: '13px',
+                  color: calendarConnected ? '#34C759' : '#FF9500',
+                  fontWeight: '500',
+                }}
+              >
+                <span style={{ fontSize: '10px' }}>
+                  {calendarConnected === null ? '…' : calendarConnected ? '●' : '●'}
+                </span>
+                {calendarConnected === null ? 'Checking…' : calendarConnected ? 'Connected' : 'Not connected'}
+              </span>
+              <button
+                onClick={handleConnectCalendar}
+                disabled={calendarConnecting}
+                style={{
+                  marginLeft: 'auto',
+                  padding: '7px 14px', borderRadius: '8px', border: 'none',
+                  background: calendarConnected ? '#F2F2F7' : '#007AFF',
+                  color: calendarConnected ? '#3C3C43' : '#fff',
+                  fontSize: '13px', fontWeight: '600',
+                  cursor: calendarConnecting ? 'default' : 'pointer',
+                  opacity: calendarConnecting ? 0.6 : 1,
+                }}
+              >
+                {calendarConnecting ? 'Connecting…' : calendarConnected ? 'Reconnect' : 'Connect'}
+              </button>
+            </div>
+            {calendarError && (
+              <p style={{ fontSize: '12px', color: '#FF3B30', margin: '8px 0 0' }}>
+                {calendarError}
+              </p>
+            )}
+          </div>
 
           {/* Budget section */}
           <div

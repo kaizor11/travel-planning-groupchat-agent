@@ -87,6 +87,8 @@ async def get_freebusy(
     # Collect busy intervals from each member's Google Calendar
     busy_intervals_per_user: list[list[tuple[datetime, datetime]]] = []
     members_checked = 0
+    members_token_expired = 0
+    members_no_token = 0
 
     try:
         from googleapiclient.discovery import build  # type: ignore
@@ -103,6 +105,7 @@ async def get_freebusy(
             continue
         token = user.get("googleCalendarToken")
         if not token:
+            members_no_token += 1
             continue  # skip members who haven't connected Calendar
 
         try:
@@ -124,17 +127,35 @@ async def get_freebusy(
             busy_intervals_per_user.append(intervals)
             members_checked += 1
         except Exception as exc:
-            print(f"[Calendar] failed to query calendar for {uid}: {exc}")
-            # Skip this member rather than failing the whole request
+            exc_str = str(exc).lower()
+            if "401" in exc_str or "invalid_grant" in exc_str or "unauthorized" in exc_str or "token" in exc_str:
+                members_token_expired += 1
+                print(f"[Calendar] token expired for {uid}: {exc}")
+            else:
+                print(f"[Calendar] failed to query calendar for {uid}: {exc}")
 
     if members_checked == 0:
+        if members_token_expired > 0:
+            note = (
+                f"{members_token_expired} member(s) have an expired calendar token — "
+                "they need to reconnect Google Calendar from their profile."
+            )
+        else:
+            note = "No members have connected Google Calendar"
         return {
             "windows": [],
             "membersChecked": 0,
-            "note": "No members have connected Google Calendar",
+            "membersTokenExpired": members_token_expired,
+            "membersNoToken": members_no_token,
+            "note": note,
         }
 
     windows = _find_free_windows(busy_intervals_per_user, time_min, time_max)
     store_trip_availability(body.trip_id, windows)
 
-    return {"windows": windows, "membersChecked": members_checked}
+    return {
+        "windows": windows,
+        "membersChecked": members_checked,
+        "membersTokenExpired": members_token_expired,
+        "membersNoToken": members_no_token,
+    }

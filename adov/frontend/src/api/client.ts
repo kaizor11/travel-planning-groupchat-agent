@@ -97,6 +97,7 @@ export interface UserProfile {
   preferences?: string[]
   tripDurationMin?: number
   tripDurationMax?: number
+  calendarConnected?: boolean
 }
 
 export async function getProfile(idToken: string): Promise<UserProfile> {

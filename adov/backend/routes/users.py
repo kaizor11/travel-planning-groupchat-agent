@@ -15,7 +15,8 @@ router = APIRouter()
 async def get_my_profile(current_user: dict = Depends(get_current_user)):
     uid = current_user["uid"]
     profile = get_user(uid) or {}
-    # Strip internal fields
+    # Expose whether calendar is connected, then strip the token itself
+    profile["calendarConnected"] = bool(profile.get("googleCalendarToken"))
     profile.pop("googleCalendarToken", None)
     return profile
 
