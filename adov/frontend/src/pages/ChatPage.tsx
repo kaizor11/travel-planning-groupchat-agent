@@ -137,7 +137,7 @@ export default function ChatPage() {
               </div>
               <p className="font-semibold text-black" style={{ fontSize: '15px' }}>Adov</p>
               <p style={{ fontSize: '13px', color: '#8E8E93', maxWidth: '220px', lineHeight: '1.5' }}>
-                Drop a travel link to start building your group wish pool.
+                Drop a travel link or start chatting.
               </p>
             </div>
           </div>

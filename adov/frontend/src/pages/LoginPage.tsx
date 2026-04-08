@@ -89,7 +89,7 @@ export default function LoginPage() {
           lineHeight: '1.5',
         }}
       >
-        Plan group trips together — no spreadsheets, no drama.
+        Let's make this trip out of the group chat.
       </p>
 
       {/* Sign-in button */}
