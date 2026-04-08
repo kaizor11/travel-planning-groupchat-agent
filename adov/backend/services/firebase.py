@@ -77,6 +77,22 @@ def get_messages(trip_id: str) -> list[dict]:
 
 # ── Write ─────────────────────────────────────────────────────────────────────
 
+def get_recent_messages(trip_id: str, limit: int = 10) -> list[dict]:
+    """Return the most recent `limit` messages, ordered oldest-first."""
+    db = get_db()
+    docs = (
+        db.collection("trips")
+        .document(trip_id)
+        .collection("messages")
+        .order_by("timestamp", direction=firestore.Query.DESCENDING)
+        .limit(limit)
+        .stream()
+    )
+    msgs = [_doc_to_dict(doc) for doc in docs]
+    msgs.reverse()
+    return msgs
+
+
 def add_message(trip_id: str, msg: dict) -> str:
     db = get_db()
     ref = (
@@ -88,6 +104,21 @@ def add_message(trip_id: str, msg: dict) -> str:
     payload = _omit_none({**msg, "timestamp": firestore.SERVER_TIMESTAMP})
     ref.set(payload)
     return ref.id
+
+
+def upsert_user_preference(trip_id: str, user_id: str, preference: dict) -> None:
+    """Append a preference item to /trips/{tripId}/preferences/{userId}."""
+    db = get_db()
+    db.collection("trips").document(trip_id).collection("preferences").document(
+        user_id
+    ).set(
+        {
+            "userId": user_id,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+            "items": firestore.ArrayUnion([preference]),
+        },
+        merge=True,
+    )
 
 
 def add_wish_pool_entry(trip_id: str, entry: dict) -> str:

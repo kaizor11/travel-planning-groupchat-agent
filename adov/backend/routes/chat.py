@@ -22,6 +22,13 @@ from services.firebase import (
 router = APIRouter()
 
 URL_REGEX = re.compile(r"https?://[^\s]+")
+MENTION_REGEX = re.compile(r"@adov\b", re.IGNORECASE)
+PREFERENCE_SIGNAL_REGEX = re.compile(
+    r"\b(i (love|hate|like|want|prefer)|"
+    r"i('d| would) (love|rather|prefer|hate)|"
+    r"not (a fan|into)|can't stand|don't (like|want)|not feeling)\b",
+    re.IGNORECASE,
+)
 
 
 # ── Trip info ──────────────────────────────────────────────────────────────────
@@ -88,10 +95,10 @@ async def send_message(
 
     msg_id = add_message(trip_id, msg)
 
-    # Trigger AI parsing inline if a URL was detected
-    if url_match:
-        from routes.ai import parse_content, ParseRequest
+    from routes.ai import handle_mention, handle_preference, parse_content, ParseRequest
 
+    # Cue 1: URL detected → parse travel content
+    if url_match:
         caption = text.replace(url_match.group(0), "").strip() or None
         await parse_content(
             ParseRequest(
@@ -101,6 +108,14 @@ async def send_message(
                 sender_id=uid,
             )
         )
+
+    # Cue 2: @adov mention → conversational reply with recent context
+    if MENTION_REGEX.search(text):
+        await handle_mention(trip_id, sender_name)
+
+    # Cue 3: preference signal → silent extraction and storage (skipped when @adov handles it)
+    elif PREFERENCE_SIGNAL_REGEX.search(text):
+        await handle_preference(trip_id, uid, text)
 
     return {"ok": True, "id": msg_id}
 

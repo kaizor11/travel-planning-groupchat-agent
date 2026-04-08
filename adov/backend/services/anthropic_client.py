@@ -4,7 +4,7 @@ import os
 import re
 
 from anthropic import Anthropic
-from prompts.agent import PARSE_CONTENT_SYSTEM_PROMPT
+from prompts.agent import AGENT_CONTEXT, PARSE_CONTENT_SYSTEM_PROMPT, PREFERENCE_EXTRACTION_PROMPT
 
 _client: Anthropic | None = None
 
@@ -19,6 +19,63 @@ def get_client() -> Anthropic:
 def _strip_code_fences(raw: str) -> str:
     """Remove optional ```json ... ``` wrappers Claude sometimes adds."""
     return re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE).rstrip("` \n")
+
+
+def get_chat_response(messages_context: list[dict], sender_name: str) -> str:
+    """
+    Generate a conversational reply to an @adov mention.
+    messages_context: recent messages ordered oldest-first, each with senderId/senderName/text/type.
+    Returns the AI reply text.
+    """
+    # Build alternating-role turns from chat history
+    raw_turns: list[dict] = []
+    for msg in messages_context:
+        if msg.get("senderId") == "ai":
+            raw_turns.append({"role": "assistant", "content": msg.get("text", "")})
+        else:
+            name = msg.get("senderName") or msg.get("senderId", "User")
+            raw_turns.append({"role": "user", "content": f"[{name}]: {msg.get('text', '')}"})
+
+    # Merge consecutive same-role turns (Claude requires strict alternation)
+    merged: list[dict] = []
+    for turn in raw_turns:
+        if merged and merged[-1]["role"] == turn["role"]:
+            merged[-1]["content"] += "\n" + turn["content"]
+        else:
+            merged.append(dict(turn))
+
+    # Ensure the last turn is from the user (required by Claude)
+    if not merged or merged[-1]["role"] != "user":
+        merged.append({"role": "user", "content": f"[{sender_name}] mentioned you."})
+
+    message = get_client().messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+        system=AGENT_CONTEXT,
+        messages=merged,
+    )
+    return message.content[0].text.strip() if message.content else ""
+
+
+def extract_preference(text: str) -> dict | None:
+    """
+    Lightweight call to extract a single preference from user text.
+    Returns a dict with type/item/sentiment, or None if no clear preference found.
+    """
+    message = get_client().messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=150,
+        system=PREFERENCE_EXTRACTION_PROMPT,
+        messages=[{"role": "user", "content": text}],
+    )
+    raw = message.content[0].text.strip() if message.content else "null"
+    if raw.lower() == "null":
+        return None
+    cleaned = _strip_code_fences(raw)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
 
 
 def parse_travel_content(url: str | None, text: str | None) -> dict:

@@ -68,6 +68,25 @@ Once a trip is agreed upon, generate a pre-filled search link to Booking.com or 
 """.strip()
 
 
+PREFERENCE_EXTRACTION_PROMPT = """Extract a single travel preference from the user's message. Return ONLY raw JSON or the word null — no markdown, no explanation.
+
+If the message expresses a preference (destination, food, activity, vibe, or a dislike), return:
+{"type": "destination|food|activity|vibe|other", "item": "specific thing expressed", "sentiment": "positive|negative"}
+
+Return null (the literal word, no quotes) if:
+- The message contains no clear preference
+- The preference is too vague to be useful (e.g. "something fun", "nice place")
+- The message is a question, greeting, or logistics message
+
+Examples:
+"I really want to go to Japan" → {"type": "destination", "item": "Japan", "sentiment": "positive"}
+"not a fan of beach trips tbh" → {"type": "activity", "item": "beach trips", "sentiment": "negative"}
+"omg I love sushi" → {"type": "food", "item": "sushi", "sentiment": "positive"}
+"I'd rather avoid really cold places" → {"type": "vibe", "item": "cold destinations", "sentiment": "negative"}
+"where should we go?" → null
+"sounds good to me" → null
+"""
+
 PARSE_CONTENT_SYSTEM_PROMPT = f"""{AGENT_CONTEXT}
 
 ---
