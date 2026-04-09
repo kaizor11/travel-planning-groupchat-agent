@@ -1,0 +1,157 @@
+import json
+from datetime import datetime
+
+from config import (
+    ACTIVE_LLM_PROVIDER,
+    ACTIVE_TRAVEL_PROVIDER,
+    CURRENT_DATE,
+    FLIGHT_EXTRACTION_PROMPT_RULES,
+    FLIGHT_SEARCH_SCHEMA,
+    HOTEL_EXTRACTION_PROMPT_RULES,
+    HOTEL_SEARCH_SCHEMA,
+    USER_TIMEZONE,
+)
+from llm import create_llm_provider
+from travel import create_travel_provider
+
+
+def normalize_dates(
+    data: dict,
+    date_fields: list[str],
+    current_date: str = CURRENT_DATE,
+) -> dict:
+    current_dt = datetime.strptime(current_date, "%Y-%m-%d")
+    current_year = current_dt.year
+
+    for key in date_fields:
+        value = data.get(key)
+        if not value:
+            continue
+
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        if dt.year < current_year:
+            dt = dt.replace(year=current_year)
+
+        data[key] = dt.strftime("%Y-%m-%d")
+
+    return data
+
+
+def normalize_positive_int(value, default: int) -> int:
+    try:
+        parsed_value = int(value)
+    except (TypeError, ValueError):
+        return default
+
+    return parsed_value if parsed_value > 0 else default
+
+
+def normalize_optional_number(value):
+    if value in (None, ""):
+        return None
+
+    try:
+        parsed_value = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if parsed_value.is_integer():
+        return int(parsed_value)
+
+    return parsed_value
+
+
+def normalize_flight_data(
+    data: dict,
+    current_date: str = CURRENT_DATE,
+) -> dict:
+    data = normalize_dates(
+        data,
+        ["outbound_date", "return_date"],
+        current_date=current_date,
+    )
+    data["adults"] = normalize_positive_int(data.get("adults"), default=1)
+    return data
+
+
+def normalize_hotel_data(
+    data: dict,
+    current_date: str = CURRENT_DATE,
+) -> dict:
+    data = normalize_dates(
+        data,
+        ["check_in_date", "check_out_date"],
+        current_date=current_date,
+    )
+    data["adults"] = normalize_positive_int(data.get("adults"), default=1)
+    data["rooms"] = normalize_positive_int(data.get("rooms"), default=1)
+    data["min_star_rating"] = normalize_optional_number(data.get("min_star_rating"))
+    data["max_price_per_night"] = normalize_optional_number(
+        data.get("max_price_per_night")
+    )
+    return data
+
+
+def main():
+    user_text = (
+        "Book me a one-way flight from San Francisco to Chicago on May 10 for 2 adults."
+    )
+
+    llm_provider = create_llm_provider(ACTIVE_LLM_PROVIDER)
+    travel_provider = create_travel_provider(ACTIVE_TRAVEL_PROVIDER)
+
+    detected_intent = llm_provider.detect_intent(
+        user_text=user_text,
+        current_date=CURRENT_DATE,
+        user_timezone=USER_TIMEZONE,
+    )
+
+    print(f"Detected intent: {detected_intent}")
+
+    if detected_intent == "flight_search":
+        print("Using flight search flow.")
+        structured_data = llm_provider.extract_parameters(
+            user_text=user_text,
+            schema=FLIGHT_SEARCH_SCHEMA,
+            prompt_rules=FLIGHT_EXTRACTION_PROMPT_RULES,
+            current_date=CURRENT_DATE,
+            user_timezone=USER_TIMEZONE,
+        )
+        structured_data = normalize_flight_data(structured_data)
+        search_handler = travel_provider.search_flights
+    elif detected_intent == "hotel_search":
+        print("Using hotel search flow.")
+        structured_data = llm_provider.extract_parameters(
+            user_text=user_text,
+            schema=HOTEL_SEARCH_SCHEMA,
+            prompt_rules=HOTEL_EXTRACTION_PROMPT_RULES,
+            current_date=CURRENT_DATE,
+            user_timezone=USER_TIMEZONE,
+        )
+        structured_data = normalize_hotel_data(structured_data)
+        search_handler = travel_provider.search_hotels
+    else:
+        print(
+            "The request is ambiguous or unsupported. "
+            "Please ask for a flight search or hotel search."
+        )
+        return
+
+    print("Parsed model output:")
+    print(json.dumps(structured_data, ensure_ascii=False, indent=2))
+
+    print("\nCalling travel provider with parameters:")
+    print(json.dumps(structured_data, ensure_ascii=False, indent=2))
+
+    api_result = search_handler(structured_data)
+
+    print("\nTravel provider response:")
+    print(json.dumps(api_result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()
