@@ -4,11 +4,15 @@
 # conflicting with React Router's client-side /trips/:tripId routes.
 import re
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from services.auth import get_current_user
+from services.auth import (
+    get_current_trip_member,
+    get_current_trip_member_for_stream,
+    get_current_user,
+)
 from services.firebase import (
     add_message,
     add_trip_member,
@@ -18,6 +22,7 @@ from services.firebase import (
     get_user,
     stream_messages,
 )
+from services.test_tool import run_test_tool
 
 router = APIRouter()
 
@@ -36,7 +41,7 @@ PREFERENCE_SIGNAL_REGEX = re.compile(
 @router.get("/api/trips/{trip_id}")
 async def get_trip_messages(
     trip_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_trip_member),
 ):
     messages = get_messages(trip_id)
     return {
@@ -50,7 +55,10 @@ async def get_trip_messages(
 # ── SSE stream ────────────────────────────────────────────────────────────────
 
 @router.get("/api/trips/{trip_id}/stream")
-async def message_stream(trip_id: str):
+async def message_stream(
+    trip_id: str,
+    current_user: dict = Depends(get_current_trip_member_for_stream),
+):
     # SSE stream is unauthenticated — browsers can't set headers on EventSource.
     # The risk is low: messages are non-sensitive and the stream is read-only.
     return StreamingResponse(
@@ -74,7 +82,7 @@ class SendMessageBody(BaseModel):
 async def send_message(
     trip_id: str,
     body: SendMessageBody,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_trip_member),
 ):
     text = body.text.strip()
     if not text:
@@ -94,6 +102,13 @@ async def send_message(
         msg["attachedUrl"] = url_match.group(0)
 
     msg_id = add_message(trip_id, msg)
+
+    if text == "/test_tool":
+        add_message(
+            trip_id,
+            {"senderId": "ai", "text": run_test_tool(), "type": "ai"},
+        )
+        return {"ok": True, "id": msg_id}
 
     from routes.ai import handle_mention, handle_preference, parse_content, ParseRequest
 
@@ -134,7 +149,7 @@ class WishPoolBody(BaseModel):
 async def wishpool_action(
     trip_id: str,
     body: WishPoolBody,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_trip_member),
 ):
     uid = current_user["uid"]
     if body.action == "add":
@@ -173,6 +188,9 @@ async def join_trip(
     current_user: dict = Depends(get_current_user),
 ):
     """Add the authenticated user to the trip's memberIds (idempotent)."""
+    if not get_trip(trip_id):
+        raise HTTPException(status_code=404, detail="Trip not found")
+
     uid = current_user["uid"]
     add_trip_member(trip_id, uid)
     return {"ok": True, "trip_id": trip_id, "user_id": uid}
@@ -183,7 +201,7 @@ async def join_trip(
 @router.get("/api/trips/{trip_id}/budget")
 async def get_budget_summary(
     trip_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_trip_member),
 ):
     """Return group min/max budget without exposing individual members' numbers."""
     from services.firebase import get_trip_members

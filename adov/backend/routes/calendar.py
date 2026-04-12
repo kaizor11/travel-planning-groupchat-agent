@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from services.auth import get_current_user
+from services.auth import get_current_user, require_trip_member
 from services.firebase import get_trip_members, get_user, store_trip_availability
 
 router = APIRouter()
@@ -79,6 +79,8 @@ async def get_freebusy(
         time_max = datetime.fromisoformat(body.time_max.replace("Z", "+00:00"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {exc}") from exc
+
+    require_trip_member(body.trip_id, current_user)
 
     member_ids = get_trip_members(body.trip_id)
     if not member_ids:

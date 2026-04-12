@@ -53,12 +53,14 @@ export default function ChatPage() {
 
   // SSE subscription with auto-reconnect (handles backend starting after frontend)
   useEffect(() => {
-    if (!tripId) return
+    if (!tripId || !idToken) return
     let source: EventSource
     let retryTimer: ReturnType<typeof setTimeout>
 
     const connect = () => {
-      source = createSSEStream(tripId)
+      const token = idTokenRef.current
+      if (!token) return
+      source = createSSEStream(tripId, token)
       source.onmessage = (e) => {
         console.log('[SSE] received:', e.data)
         try {
@@ -95,7 +97,7 @@ export default function ChatPage() {
       source?.close()
       clearTimeout(retryTimer)
     }
-  }, [tripId])
+  }, [tripId, idToken])
 
   const handleSend = useCallback(async (text: string) => {
     if (!tripId || !currentUserId || !idToken) return

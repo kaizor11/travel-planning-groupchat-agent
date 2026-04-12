@@ -64,8 +64,9 @@ export async function confirmWishpool(
   if (!res.ok) throw new Error('Failed to confirm wishpool')
 }
 
-export function createSSEStream(tripId: string): EventSource {
-  return new EventSource(`${SSE_BASE}/api/trips/${tripId}/stream`)
+export function createSSEStream(tripId: string, idToken: string): EventSource {
+  const params = new URLSearchParams({ token: idToken })
+  return new EventSource(`${SSE_BASE}/api/trips/${tripId}/stream?${params.toString()}`)
 }
 
 // ── Group invite ──────────────────────────────────────────────────────────────
