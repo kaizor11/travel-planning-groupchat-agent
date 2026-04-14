@@ -82,7 +82,8 @@ async def parse_content(body: ParseRequest):
             parsed["destination"] = temp["location"]
             parsed["tags"] = temp.get("tags", [])
             parsed["estimatedCost"] = "$15" #placeholder, maybe add more parsing logic or call to claude
-            
+            parsed["confidence"] = 0.8 #placeholder
+
     except Exception:
         pass  # Fall through — always write a fallback message below
 
