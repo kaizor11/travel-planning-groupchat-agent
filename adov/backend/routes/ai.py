@@ -18,7 +18,7 @@ SOCIAL_MEDIA_REGEX = re.compile(
     r"instagram|tiktok|youtube|youtu\.be|twitter|x\.com", re.IGNORECASE
 )
 
-INSTAGRAM_REEL_REGEX = re.compile(r"*instagram\.com/reel*")
+INSTAGRAM_REEL_REGEX = re.compile(r"instagram\.com/reel")
 
 COST_EMOJI = {"budget": "💸", "mid-range": "💰", "luxury": "💎"}
 
