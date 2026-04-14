@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from services.anthropic_client import extract_preference, get_chat_response, parse_travel_content
 from services.firebase import add_message, get_db, get_recent_messages, get_trip_member_status, upsert_user_preference
+from services.instagram_scraper import scrapify_reel
 from firebase_admin import firestore
 
 router = APIRouter()
@@ -16,6 +17,8 @@ URL_REGEX = re.compile(r"https?://[^\s]+")
 SOCIAL_MEDIA_REGEX = re.compile(
     r"instagram|tiktok|youtube|youtu\.be|twitter|x\.com", re.IGNORECASE
 )
+
+INSTAGRAM_REEL_REGEX = re.compile(r"*instagram.com/reel")
 
 COST_EMOJI = {"budget": "💸", "mid-range": "💰", "luxury": "💎"}
 
@@ -60,17 +63,29 @@ async def parse_content(body: ParseRequest):
         raise HTTPException(status_code=400, detail="url or text is required")
 
     is_social = bool(body.url and SOCIAL_MEDIA_REGEX.search(body.url))
+    is_reel = bool(body.url and INSTAGRAM_REEL_REGEX.search(body.url))
 
     # Run in a thread so the asyncio event loop stays free while Claude responds.
     # Without this, the 2-5 s blocking call would stall uvicorn, killing the SSE stream.
     parsed: dict | None = None
     try:
         loop = asyncio.get_running_loop()
-        parsed = await loop.run_in_executor(
-            None, lambda: parse_travel_content(url=body.url, text=body.text)
-        )
+        if not is_reel:
+            parsed = await loop.run_in_executor(
+                None, lambda: parse_travel_content(url=body.url, text=body.text)
+            )
+        else:
+            temp = await loop.run_in_executor(
+                None, lambda: scrapify_reel(body.url)
+            )   
+            parsed = {}
+            parsed["destination"] = temp["location"]
+            parsed["tags"] = temp.get("tags", [])
+            parsed["estimatedCost"] = "$15" #placeholder, maybe add more parsing logic or call to claude
+            
     except Exception:
         pass  # Fall through — always write a fallback message below
+
 
     high_confidence = parsed is not None and parsed.get("confidence", 0) >= 0.7
 
