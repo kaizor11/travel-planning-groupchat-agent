@@ -78,7 +78,7 @@ async def parse_content(body: ParseRequest):
             temp = await loop.run_in_executor(
                 None, lambda: scrapify_reel(body.url)
             )   
-            parsed = {}
+            parsed = dict()
             parsed["destination"] = temp["location"]
             parsed["tags"] = temp.get("tags", [])
             parsed["estimatedCost"] = "$15" #placeholder, maybe add more parsing logic or call to claude
