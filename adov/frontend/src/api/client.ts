@@ -23,7 +23,7 @@ function authHeaders(idToken: string) {
 async function fetchWithAuth(
   url: string,
   options: RequestInit,
-  idToken: string,
+  _idToken: string,
 ): Promise<Response> {
   const res = await fetch(url, options)
   if (res.status === 401) {
