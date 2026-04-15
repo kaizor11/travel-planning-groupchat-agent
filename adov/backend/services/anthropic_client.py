@@ -7,7 +7,7 @@ from anthropic import Anthropic
 from prompts.agent import AGENT_CONTEXT, PARSE_CONTENT_SYSTEM_PROMPT, PREFERENCE_EXTRACTION_PROMPT, PROPOSAL_GENERATION_PROMPT
 
 # Central model constant — override via ANTHROPIC_MODEL env var to switch models without code changes
-MODEL = os.getenv("ANTHROPIC_MODEL", MODEL)
+MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 _client: Anthropic | None = None
 
