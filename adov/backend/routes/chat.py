@@ -119,9 +119,9 @@ async def send_message(
     if MENTION_REGEX.search(text):
         if PROPOSAL_TRIGGER_REGEX.search(text):
             # Proposal trigger: generate structured trip proposals
-            await handle_proposal_request(trip_id, sender_name)
+            await handle_proposal_request(trip_id, sender_name, trigger_text=text)
         else:
-            await handle_mention(trip_id, sender_name)
+            await handle_mention(trip_id, sender_name, trigger_text=text)
 
     # Cue 3: preference signal → silent extraction and storage (skipped when @adov handles it)
     elif PREFERENCE_SIGNAL_REGEX.search(text):

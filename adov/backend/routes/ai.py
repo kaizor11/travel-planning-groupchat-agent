@@ -38,7 +38,13 @@ class ParseRequest(BaseModel):
     sender_id: str
 
 
-async def handle_mention(trip_id: str, sender_name: str) -> None:
+_AVAILABILITY_RE = re.compile(
+    r"\b(free|available|availability|calendar|schedule|when (can|are|is)|open)\b",
+    re.IGNORECASE,
+)
+
+
+async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "") -> None:
     """Fetch recent context (including active proposal vote status), call Claude, write AI reply."""
     loop = asyncio.get_running_loop()
     try:
@@ -51,8 +57,54 @@ async def handle_mention(trip_id: str, sender_name: str) -> None:
             msgs_future, members_future, proposals_future, member_ids_future
         )
 
-        # Build extra context: inject vote tallies so Claude can report progress
-        extra_context = ""
+        # ── Determine the "real" request text ─────────────────────────────────
+        # If the trigger is a bare "@adov" (user forgot to include the question),
+        # treat the previous user message as the actual request.
+        trigger_stripped = re.sub(r"@adov\b", "", trigger_text, flags=re.IGNORECASE).strip()
+        is_bare_mention = len(trigger_stripped) < 3
+
+        context_for_analysis = trigger_text
+        if is_bare_mention and msgs:
+            for m in reversed(msgs[:-1]):  # walk backwards, skip the @adov msg itself
+                if m.get("senderId") != "ai":
+                    context_for_analysis = m.get("text", "") + " " + trigger_text
+                    break
+
+        # ── Specific-member calendar check ────────────────────────────────────
+        # If the message names specific members in an availability query, short-circuit
+        # with a concise error for any who haven't connected their calendar.
+        if members and _AVAILABILITY_RE.search(context_for_analysis):
+            ctx_lower = context_for_analysis.lower()
+            mentioned = [
+                m for m in members
+                if m.get("name") and m["name"].split()[0].lower() in ctx_lower
+            ]
+            if mentioned:
+                missing = [m["name"] for m in mentioned if not m["calendarConnected"]]
+                if missing:
+                    names_str = (
+                        " and ".join(missing)
+                        if len(missing) <= 2
+                        else ", ".join(missing[:-1]) + f", and {missing[-1]}"
+                    )
+                    verb = "haven't" if len(missing) > 1 else "hasn't"
+                    add_message(
+                        trip_id,
+                        {
+                            "senderId": "ai",
+                            "text": (
+                                f"{names_str} {verb} connected their calendar yet. "
+                                f"They can connect by tapping the profile icon (top-left) "
+                                f"→ Google Calendar → Connect."
+                            ),
+                            "type": "ai",
+                        },
+                    )
+                    return
+
+        # ── Build extra context for Claude ────────────────────────────────────
+        extra_context_parts: list[str] = []
+
         if proposals:
             vote_lines = ["[ACTIVE PROPOSALS AND CURRENT VOTES — ground truth:]"]
             for p in proposals:
@@ -66,7 +118,17 @@ async def handle_mention(trip_id: str, sender_name: str) -> None:
                     f"{len(votes)}/{len(member_ids)} voted — "
                     f"👍 {tally['yes']} 👎 {tally['no']} 🤔 {tally['maybe']}"
                 )
-            extra_context = "\n" + "\n".join(vote_lines)
+            extra_context_parts.append("\n" + "\n".join(vote_lines))
+
+        # Tell Claude which message contains the actual request
+        if is_bare_mention:
+            extra_context_parts.append(
+                "\n[RESPONSE FOCUS: The user sent just \"@adov\" to get your attention. "
+                "The actual request is in the message immediately before the @adov message. "
+                "Respond to that message's intent — do not just acknowledge the mention.]"
+            )
+
+        extra_context = "".join(extra_context_parts)
 
         reply = await loop.run_in_executor(
             None, lambda: get_chat_response(msgs, sender_name, members, extra_context=extra_context)
@@ -77,7 +139,7 @@ async def handle_mention(trip_id: str, sender_name: str) -> None:
         print(f"[handle_mention] error: {exc}")
 
 
-async def handle_proposal_request(trip_id: str, sender_name: str) -> None:
+async def handle_proposal_request(trip_id: str, sender_name: str, trigger_text: str = "") -> None:
     """
     Trigger the proposal generation flow when @adov is mentioned with a trip-planning phrase.
     Falls back to a regular handle_mention if generation fails or wish pool is too thin.
@@ -218,7 +280,7 @@ async def handle_proposal_request(trip_id: str, sender_name: str) -> None:
     except Exception as exc:
         print(f"[handle_proposal_request] error: {exc}")
         # Graceful fallback: treat as regular @adov mention
-        await handle_mention(trip_id, sender_name)
+        await handle_mention(trip_id, sender_name, trigger_text=trigger_text)
 
 
 async def handle_preference(trip_id: str, sender_id: str, text: str) -> None:
