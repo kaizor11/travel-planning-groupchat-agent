@@ -18,6 +18,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
   const [budgetMin, setBudgetMin] = useState('')
   const [budgetMax, setBudgetMax] = useState('')
   const [preferences, setPreferences] = useState<string[]>([])
+  const [homeAirport, setHomeAirport] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [calendarConnected, setCalendarConnected] = useState<boolean | null>(null)
@@ -33,6 +34,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
       if (profile.budgetMin != null) setBudgetMin(String(profile.budgetMin))
       if (profile.budgetMax != null) setBudgetMax(String(profile.budgetMax))
       if (profile.preferences) setPreferences(profile.preferences)
+      if (profile.homeAirport) setHomeAirport(profile.homeAirport)
       setCalendarConnected(profile.calendarConnected ?? false)
     } catch {
       setProfileLoadError(true)
@@ -94,6 +96,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
         budgetMin: budgetMin ? parseInt(budgetMin, 10) : undefined,
         budgetMax: budgetMax ? parseInt(budgetMax, 10) : undefined,
         preferences,
+        homeAirport: homeAirport.trim() || undefined,
       }, idToken)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -292,6 +295,34 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
                 />
               </div>
             </div>
+          </div>
+
+          {/* Home airport section */}
+          <div
+            style={{
+              background: '#fff', borderRadius: '12px',
+              padding: '16px', marginBottom: '16px',
+            }}
+          >
+            <p style={{ fontSize: '13px', fontWeight: '600', color: '#000', margin: '0 0 4px' }}>
+              Home Airport
+            </p>
+            <p style={{ fontSize: '12px', color: '#8E8E93', margin: '0 0 12px' }}>
+              Used for real flight price estimates in trip proposals
+            </p>
+            <input
+              type="text"
+              value={homeAirport}
+              onChange={e => setHomeAirport(e.target.value.toUpperCase())}
+              placeholder="LAX"
+              maxLength={10}
+              style={{
+                width: '100%', padding: '10px 12px', borderRadius: '8px',
+                border: '1px solid rgba(0,0,0,0.12)', fontSize: '15px',
+                background: '#F2F2F7', outline: 'none', boxSizing: 'border-box',
+                textTransform: 'uppercase', letterSpacing: '1px',
+              }}
+            />
           </div>
 
           {/* Preferences section */}

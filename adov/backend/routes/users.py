@@ -27,6 +27,7 @@ class UpdateProfileBody(BaseModel):
     preferences: list[str] | None = None  # e.g. ["beach", "hiking", "city"]
     trip_duration_min: int | None = None  # days
     trip_duration_max: int | None = None  # days
+    home_airport: str | None = None  # IATA code or city name, e.g. "LAX" or "Los Angeles"
 
 
 @router.put("/api/users/me")
@@ -46,6 +47,8 @@ async def update_my_profile(
         fields["tripDurationMin"] = body.trip_duration_min
     if body.trip_duration_max is not None:
         fields["tripDurationMax"] = body.trip_duration_max
+    if body.home_airport is not None:
+        fields["homeAirport"] = body.home_airport.strip().upper() if len(body.home_airport.strip()) == 3 else body.home_airport.strip()
     if fields:
         update_user(uid, fields)
     return {"ok": True}

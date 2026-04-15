@@ -220,6 +220,72 @@ def store_trip_availability(trip_id: str, windows: list[dict]) -> None:
     )
 
 
+# ── Wish pool read ────────────────────────────────────────────────────────────
+
+def get_wish_pool(trip_id: str) -> list[dict]:
+    """Return all confirmed wish pool entries for a trip, ordered by confirmedAt."""
+    db = get_db()
+    docs = (
+        db.collection("trips")
+        .document(trip_id)
+        .collection("wishPool")
+        .order_by("confirmedAt")
+        .stream()
+    )
+    result = []
+    for doc in docs:
+        data = doc.to_dict() or {}
+        data["id"] = doc.id
+        result.append(data)
+    return result
+
+
+# ── Proposals ─────────────────────────────────────────────────────────────────
+
+def add_proposal(trip_id: str, proposal: dict) -> str:
+    """Write a proposal dict to /trips/{tripId}/proposals/, return the doc ID."""
+    db = get_db()
+    ref = (
+        db.collection("trips")
+        .document(trip_id)
+        .collection("proposals")
+        .document()
+    )
+    payload = _omit_none({**proposal, "generatedAt": firestore.SERVER_TIMESTAMP})
+    ref.set(payload)
+    return ref.id
+
+
+def get_proposals(trip_id: str) -> list[dict]:
+    """Return all proposals for a trip, ordered by generatedAt."""
+    db = get_db()
+    docs = (
+        db.collection("trips")
+        .document(trip_id)
+        .collection("proposals")
+        .order_by("generatedAt")
+        .stream()
+    )
+    result = []
+    for doc in docs:
+        data = doc.to_dict() or {}
+        data["id"] = doc.id
+        # Convert generatedAt timestamp to ISO if present
+        ts = data.get("generatedAt")
+        if isinstance(ts, datetime):
+            data["generatedAt"] = ts.isoformat()
+        result.append(data)
+    return result
+
+
+def record_vote(trip_id: str, proposal_id: str, user_id: str, vote: str) -> None:
+    """Record a user's vote on a proposal using merge to avoid overwriting other votes."""
+    db = get_db()
+    db.collection("trips").document(trip_id).collection("proposals").document(
+        proposal_id
+    ).set({"votes": {user_id: vote}}, merge=True)
+
+
 # ── SSE streaming ─────────────────────────────────────────────────────────────
 
 async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:

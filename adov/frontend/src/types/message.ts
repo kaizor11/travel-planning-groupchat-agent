@@ -9,6 +9,18 @@ export interface ParsedData {
   confidence: number
 }
 
+export interface ProposalData {
+  proposalId: string
+  destination: string
+  suggestedDates: { start: string; end: string }
+  estimatedCostPerPerson: number
+  flightEstimate?: number | null
+  rationale: string
+  tradeoff: string
+  bookingSearchUrl?: string
+  votes?: Record<string, 'yes' | 'no' | 'maybe'>
+}
+
 export interface Message {
   id: string
   type: MessageType
@@ -18,4 +30,5 @@ export interface Message {
   timestamp?: string
   attachedUrl?: string
   parsedData?: ParsedData
+  proposalsData?: ProposalData[]
 }

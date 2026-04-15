@@ -1,0 +1,288 @@
+# Proposals route: generate trip proposals, list them, and record in-chat votes.
+import asyncio
+import urllib.parse
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from services.auth import get_current_user
+from services.firebase import (
+    add_message,
+    add_proposal,
+    get_proposals,
+    get_trip,
+    get_trip_members,
+    get_user,
+    get_wish_pool,
+    record_vote,
+)
+from services.anthropic_client import generate_trip_proposals
+from services.flights_service import get_cheapest_flight
+
+router = APIRouter()
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _get_group_budget(trip_id: str) -> dict:
+    """Compute group budget overlap across all members with budgets set."""
+    member_ids = get_trip_members(trip_id)
+    budgets: list[tuple[int, int]] = []
+    for uid in member_ids:
+        user = get_user(uid)
+        if not user:
+            continue
+        low = user.get("budgetMin")
+        high = user.get("budgetMax")
+        if low is not None and high is not None:
+            budgets.append((low, high))
+
+    if not budgets:
+        return {"group_min": None, "group_max": None, "members_with_budget": 0}
+
+    return {
+        "group_min": max(b[0] for b in budgets),
+        "group_max": min(b[1] for b in budgets),
+        "members_with_budget": len(budgets),
+    }
+
+
+def _make_booking_search_url(destination: str, date_from: str, date_to: str, adults: int) -> str:
+    """Generate a pre-filled Google Flights search URL for the proposal."""
+    query = f"flights to {destination} {date_from} to {date_to}"
+    return (
+        "https://www.google.com/travel/flights?hl=en&q="
+        + urllib.parse.quote(query)
+        + f"&adults={adults}"
+    )
+
+
+def _fetch_flight_estimates(trip_id: str, destinations: list[str], outbound_date: str, adults: int) -> dict[str, int | None]:
+    """
+    For each destination, find the cheapest flight from any member's homeAirport.
+    Returns a dict mapping destination → cheapest price (or None).
+    """
+    member_ids = get_trip_members(trip_id)
+    home_airports: list[str] = []
+    for uid in member_ids:
+        user = get_user(uid)
+        if user and user.get("homeAirport"):
+            home_airports.append(user["homeAirport"])
+
+    if not home_airports:
+        return {dest: None for dest in destinations}
+
+    estimates: dict[str, int | None] = {}
+    for dest in destinations:
+        prices: list[int] = []
+        for origin in home_airports:
+            price = get_cheapest_flight(
+                origin=origin,
+                destination=dest,
+                outbound_date=outbound_date,
+                adults=adults,
+            )
+            if price is not None:
+                prices.append(price)
+        estimates[dest] = min(prices) if prices else None
+
+    return estimates
+
+
+# ── Generate proposals ────────────────────────────────────────────────────────
+
+@router.post("/api/trips/{trip_id}/proposals/generate")
+async def generate_proposals(
+    trip_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Generate 2–3 trip proposals from wish pool + availability + budget.
+    Writes each proposal to Firestore and posts a 'proposal' message to the chat.
+    """
+    loop = asyncio.get_running_loop()
+
+    # Gather all context concurrently
+    wish_pool_future = loop.run_in_executor(None, lambda: get_wish_pool(trip_id))
+    trip_future = loop.run_in_executor(None, lambda: get_trip(trip_id))
+    budget_future = loop.run_in_executor(None, lambda: _get_group_budget(trip_id))
+    member_ids_future = loop.run_in_executor(None, lambda: get_trip_members(trip_id))
+
+    wish_pool, trip, budget, member_ids = await asyncio.gather(
+        wish_pool_future, trip_future, budget_future, member_ids_future
+    )
+
+    # Check wish pool has enough data
+    if len(wish_pool) < 3:
+        add_message(
+            trip_id,
+            {
+                "senderId": "ai",
+                "text": (
+                    f"The wish pool only has {len(wish_pool)} confirmed "
+                    "destination(s) — I need at least 3 to generate good proposals. "
+                    "Share some travel links or tell me where you'd like to go!"
+                ),
+                "type": "ai",
+            },
+        )
+        return {"ok": False, "reason": "too_few_wish_pool_entries", "count": len(wish_pool)}
+
+    windows: list[dict] = (trip or {}).get("availableWindows", [])
+    member_count = len(member_ids)
+
+    # Pick outbound date from first window for flight price lookup, else upcoming date
+    outbound_date = windows[0]["start"][:10] if windows else "2026-06-01"
+
+    # Fetch real flight prices from SerpAPI if members have home airports set
+    destinations_to_check = [entry.get("destination", "") for entry in wish_pool if entry.get("destination")]
+    try:
+        flight_estimates = await loop.run_in_executor(
+            None,
+            lambda: _fetch_flight_estimates(trip_id, destinations_to_check, outbound_date, member_count),
+        )
+    except Exception as exc:
+        print(f"[proposals] flight estimate error (non-fatal): {exc}")
+        flight_estimates = {}
+
+    # Call Claude to generate proposals
+    try:
+        proposals_raw = await loop.run_in_executor(
+            None,
+            lambda: generate_trip_proposals(
+                wish_pool=wish_pool,
+                windows=windows,
+                budget=budget,
+                member_count=member_count,
+                flight_estimates=flight_estimates,
+            ),
+        )
+    except Exception as exc:
+        print(f"[proposals] Claude error: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to generate proposals")
+
+    # Handle thin-data signal from Claude
+    if proposals_raw and isinstance(proposals_raw[0], dict) and proposals_raw[0].get("tooThinData"):
+        msg_text = proposals_raw[0].get("message", "Not enough data to generate proposals yet.")
+        add_message(trip_id, {"senderId": "ai", "text": msg_text, "type": "ai"})
+        return {"ok": False, "reason": "too_thin_data"}
+
+    # Persist each proposal and build the chat message payload
+    proposals_data: list[dict] = []
+    for p in proposals_raw:
+        dates = p.get("suggestedDates", {})
+        date_from = dates.get("start", "")
+        date_to = dates.get("end", "")
+        destination = p.get("destination", "")
+
+        booking_url = _make_booking_search_url(destination, date_from, date_to, member_count)
+
+        proposal_doc = {
+            "destination": destination,
+            "suggestedDates": dates,
+            "estimatedCostPerPerson": p.get("estimatedCostPerPerson"),
+            "flightEstimate": p.get("flightEstimate"),
+            "rationale": p.get("rationale", ""),
+            "tradeoff": p.get("tradeoff", ""),
+            "bookingSearchUrl": booking_url,
+            "votes": {},
+        }
+        proposal_id = add_proposal(trip_id, proposal_doc)
+        proposals_data.append({"proposalId": proposal_id, **proposal_doc})
+
+    # Write a single proposal-type message to the chat with all proposals embedded
+    destinations_list = ", ".join(p["destination"] for p in proposals_data)
+    add_message(
+        trip_id,
+        {
+            "senderId": "ai",
+            "text": f"Here are {len(proposals_data)} trip ideas based on your wish pool — vote on your favorite!",
+            "type": "proposal",
+            "proposalsData": proposals_data,
+        },
+    )
+
+    return {"ok": True, "proposals": proposals_data}
+
+
+# ── List proposals ────────────────────────────────────────────────────────────
+
+@router.get("/api/trips/{trip_id}/proposals")
+async def list_proposals(
+    trip_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return all proposals for a trip with current vote counts."""
+    loop = asyncio.get_running_loop()
+    proposals = await loop.run_in_executor(None, lambda: get_proposals(trip_id))
+    return {"proposals": proposals}
+
+
+# ── Vote ──────────────────────────────────────────────────────────────────────
+
+class VoteBody(BaseModel):
+    vote: str  # "yes" | "no" | "maybe"
+
+
+@router.post("/api/trips/{trip_id}/proposals/{proposal_id}/vote")
+async def cast_vote(
+    trip_id: str,
+    proposal_id: str,
+    body: VoteBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """Record this user's vote and write an AI progress update to chat."""
+    valid_votes = {"yes", "no", "maybe"}
+    if body.vote not in valid_votes:
+        raise HTTPException(status_code=400, detail=f"vote must be one of {valid_votes}")
+
+    uid = current_user["uid"]
+    loop = asyncio.get_running_loop()
+
+    # Record the vote
+    await loop.run_in_executor(None, lambda: record_vote(trip_id, proposal_id, uid, body.vote))
+
+    # Refresh proposal to get updated vote map
+    all_proposals = await loop.run_in_executor(None, lambda: get_proposals(trip_id))
+    target = next((p for p in all_proposals if p["id"] == proposal_id), None)
+
+    votes: dict = target.get("votes", {}) if target else {}
+    tally = {"yes": 0, "no": 0, "maybe": 0}
+    for v in votes.values():
+        if v in tally:
+            tally[v] += 1
+
+    # Determine how many members still need to vote
+    member_ids = await loop.run_in_executor(None, lambda: get_trip_members(trip_id))
+    member_count = len(member_ids)
+    voted_count = len(votes)
+    remaining = member_count - voted_count
+
+    # Build AI progress message
+    destination = (target or {}).get("destination", "this proposal")
+    if remaining > 0:
+        ai_text = (
+            f"{voted_count} of {member_count} members have voted on **{destination}** "
+            f"— waiting on {remaining} more."
+        )
+    else:
+        # All voted — announce result
+        if tally["yes"] > tally["no"] and tally["yes"] > tally["maybe"]:
+            ai_text = (
+                f"All {member_count} members voted! **{destination}** won with "
+                f"{tally['yes']} yes vote(s). Time to book — check the search link on the proposal!"
+            )
+        elif tally["yes"] == tally["no"]:
+            ai_text = (
+                f"It's a tie between yes ({tally['yes']}) and no ({tally['no']}) for "
+                f"**{destination}**. Group, you decide — want to put this to another vote?"
+            )
+        else:
+            ai_text = (
+                f"All {member_count} members voted on **{destination}**: "
+                f"👍 {tally['yes']} · 👎 {tally['no']} · 🤔 {tally['maybe']}."
+            )
+
+    add_message(trip_id, {"senderId": "ai", "text": ai_text, "type": "ai"})
+
+    return {"ok": True, "votes": votes, "tally": tally}

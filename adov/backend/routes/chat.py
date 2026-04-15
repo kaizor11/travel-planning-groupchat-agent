@@ -23,6 +23,12 @@ router = APIRouter()
 
 URL_REGEX = re.compile(r"https?://[^\s]+")
 MENTION_REGEX = re.compile(r"@adov\b", re.IGNORECASE)
+PROPOSAL_TRIGGER_REGEX = re.compile(
+    r"\b(trip (ideas?|proposals?|suggestions?)|where should we (go|travel)|"
+    r"give us (some |trip )?ideas?|what (trips?|places?|destinations?) should we|"
+    r"suggest (some |a )?trip(s)?|plan (our )?trip|generate (some )?proposals?)\b",
+    re.IGNORECASE,
+)
 PREFERENCE_SIGNAL_REGEX = re.compile(
     r"\b(i (love|hate|like|want|prefer)|"
     r"i('d| would) (love|rather|prefer|hate)|"
@@ -95,7 +101,7 @@ async def send_message(
 
     msg_id = add_message(trip_id, msg)
 
-    from routes.ai import handle_mention, handle_preference, parse_content, ParseRequest
+    from routes.ai import handle_mention, handle_preference, handle_proposal_request, parse_content, ParseRequest
 
     # Cue 1: URL detected → parse travel content
     if url_match:
@@ -109,9 +115,13 @@ async def send_message(
             )
         )
 
-    # Cue 2: @adov mention → conversational reply with recent context
+    # Cue 2: @adov mention — check if proposing trips or just chatting
     if MENTION_REGEX.search(text):
-        await handle_mention(trip_id, sender_name)
+        if PROPOSAL_TRIGGER_REGEX.search(text):
+            # Proposal trigger: generate structured trip proposals
+            await handle_proposal_request(trip_id, sender_name)
+        else:
+            await handle_mention(trip_id, sender_name)
 
     # Cue 3: preference signal → silent extraction and storage (skipped when @adov handles it)
     elif PREFERENCE_SIGNAL_REGEX.search(text):

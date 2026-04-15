@@ -1,6 +1,6 @@
 // HTTP client: typed fetch wrappers for all backend API endpoints and SSE stream factory.
 // All mutating endpoints require an idToken (Firebase ID token) for auth.
-import type { Message } from '../types/message'
+import type { Message, ProposalData } from '../types/message'
 
 // In dev: VITE_API_URL is unset.
 //   - Fetch calls use '' so relative /api/... paths go through the Vite proxy.
@@ -98,6 +98,7 @@ export interface UserProfile {
   tripDurationMin?: number
   tripDurationMax?: number
   calendarConnected?: boolean
+  homeAirport?: string
 }
 
 export async function getProfile(idToken: string): Promise<UserProfile> {
@@ -118,6 +119,7 @@ export async function updateProfile(data: Partial<UserProfile>, idToken: string)
       preferences: data.preferences,
       trip_duration_min: data.tripDurationMin,
       trip_duration_max: data.tripDurationMax,
+      home_airport: data.homeAirport,
     }),
   })
   if (!res.ok) throw new Error('Failed to update profile')
@@ -130,6 +132,42 @@ export async function updateCalendarToken(accessToken: string, idToken: string):
     body: JSON.stringify({ access_token: accessToken }),
   })
   if (!res.ok) throw new Error('Failed to store calendar token')
+}
+
+// ── Trip proposals ────────────────────────────────────────────────────────────
+
+export async function generateProposals(tripId: string, idToken: string): Promise<ProposalData[]> {
+  const res = await fetch(`${API_BASE}/api/trips/${tripId}/proposals/generate`, {
+    method: 'POST',
+    headers: authHeaders(idToken),
+  })
+  if (!res.ok) throw new Error('Failed to generate proposals')
+  const data = await res.json()
+  return data.proposals ?? []
+}
+
+export async function getProposals(tripId: string, idToken: string): Promise<ProposalData[]> {
+  const res = await fetch(`${API_BASE}/api/trips/${tripId}/proposals`, {
+    headers: { Authorization: `Bearer ${idToken}` },
+  })
+  if (!res.ok) throw new Error('Failed to fetch proposals')
+  const data = await res.json()
+  return data.proposals ?? []
+}
+
+export async function castVote(
+  tripId: string,
+  proposalId: string,
+  vote: 'yes' | 'no' | 'maybe',
+  idToken: string,
+): Promise<{ votes: Record<string, string>; tally: Record<string, number> }> {
+  const res = await fetch(`${API_BASE}/api/trips/${tripId}/proposals/${proposalId}/vote`, {
+    method: 'POST',
+    headers: authHeaders(idToken),
+    body: JSON.stringify({ vote }),
+  })
+  if (!res.ok) throw new Error('Failed to cast vote')
+  return res.json()
 }
 
 // ── Calendar free/busy ────────────────────────────────────────────────────────

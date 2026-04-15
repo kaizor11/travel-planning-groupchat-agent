@@ -88,6 +88,33 @@ Examples:
 "sounds good to me" → null
 """
 
+PROPOSAL_GENERATION_PROMPT = """
+---
+
+## Your current task: generate trip proposals
+
+You have been provided with the group's travel context as a JSON object. Generate exactly 2–3 concrete, specific trip proposals. Return ONLY a raw JSON array — no markdown fences, no explanation, no text before or after.
+
+Each element in the array must have this exact shape:
+{
+  "destination": "Specific City, Country",
+  "suggestedDates": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},
+  "estimatedCostPerPerson": 1200,
+  "flightEstimate": 350,
+  "rationale": "2-3 sentences citing specific wish pool entries by destination name",
+  "tradeoff": "One honest tradeoff for this option"
+}
+
+Rules:
+- Dates MUST fall within the provided availableWindows. If no windows provided, pick reasonable dates in the next 60–90 days.
+- estimatedCostPerPerson is an integer USD covering flights + accommodation combined.
+- If a real flightEstimate is provided in the input, use it. Otherwise, estimate based on typical prices from major US cities and set flightEstimate to your estimate as an integer.
+- rationale must cite specific wish pool destinations or tags (e.g. "Alex saved Bali for the beach vibe").
+- Never exceed the group's budget range. If cost would exceed it, pick a cheaper option.
+- If the wish pool has fewer than 3 confirmed entries, return a JSON object (not array): {"tooThinData": true, "message": "short explanation asking group to save more content"}
+- Destinations must be specific cities or regions — never vague (not "somewhere in Asia").
+"""
+
 PARSE_CONTENT_SYSTEM_PROMPT = f"""{AGENT_CONTEXT}
 
 ---

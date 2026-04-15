@@ -2,6 +2,7 @@
 // Received messages show the sender's name above the bubble for multi-user attribution.
 import type { Message } from '../types/message'
 import WishPoolCard from './WishPoolCard'
+import ProposalCard from './ProposalCard'
 
 interface MessageBubbleProps {
   message: Message
@@ -25,6 +26,29 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
   const isAi = message.senderId === 'ai'
   const initials = getInitials(message.senderName, message.senderId)
   const displayName = message.senderName || message.senderId
+
+  if (message.type === 'proposal' && message.proposalsData && message.proposalsData.length > 0) {
+    return (
+      <div className="flex items-end gap-2 px-3 mb-1 im-bubble-wrap">
+        <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
+        <div className="flex flex-col gap-2" style={{ maxWidth: '320px' }}>
+          <div className="relative">
+            <div className="im-bubble im-bubble-ai">{message.text}</div>
+            <div className="im-bubble-ai-clear" />
+          </div>
+          {message.proposalsData.map(proposal => (
+            <ProposalCard
+              key={proposal.proposalId}
+              proposal={proposal}
+              tripId={tripId}
+              idToken={idToken}
+              currentUserId={currentUserId}
+            />
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   if (message.type === 'wishpool_confirm' && message.parsedData) {
     return (

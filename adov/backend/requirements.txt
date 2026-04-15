@@ -7,3 +7,5 @@ python-multipart>=0.0.12
 sse-starlette>=2.1.0
 google-api-python-client>=2.0.0
 google-auth>=2.0.0
+requests>=2.31.0
+apify-client>=1.6.0
