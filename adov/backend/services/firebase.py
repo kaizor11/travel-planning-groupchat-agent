@@ -1,13 +1,16 @@
 # Firebase service: lazy Admin SDK initialization, Firestore CRUD helpers, and SSE-compatible message streaming.
 import asyncio
 import json
+import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator
 
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_document import DocumentSnapshot
+
+logger = logging.getLogger(__name__)
 
 _app: firebase_admin.App | None = None
 
@@ -30,7 +33,11 @@ def _get_app() -> firebase_admin.App:
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     )
-    _app = firebase_admin.initialize_app(cred)
+    try:
+        _app = firebase_admin.initialize_app(cred)
+    except Exception as exc:
+        # Re-raise without chaining so credential values don't appear in tracebacks/logs
+        raise RuntimeError(f"Firebase init failed: {type(exc).__name__}") from None
     return _app
 
 
@@ -168,6 +175,14 @@ def set_user_calendar_token(uid: str, access_token: str) -> None:
     )
 
 
+def clear_user_calendar_token(uid: str) -> None:
+    """Delete the stored calendar token so calendarConnected correctly shows False."""
+    db = get_db()
+    db.collection("users").document(uid).update(
+        {"googleCalendarToken": firestore.DELETE_FIELD}
+    )
+
+
 # ── Trip membership helpers ──────────────────────────────────────────────────
 
 def get_trip(trip_id: str) -> dict | None:
@@ -298,7 +313,7 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
     then polls only for messages AFTER that timestamp. An empty poll costs 1 read
     instead of N (total message count), which prevents quota exhaustion during testing.
     """
-    print(f"[SSE] stream_messages started for trip {trip_id}")
+    logger.info(f"[SSE] stream_messages started for trip {trip_id}")
     try:
         db = get_db()
         loop = asyncio.get_running_loop()
@@ -319,11 +334,13 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
                 raw_ts = (doc.to_dict() or {}).get("timestamp")
                 if raw_ts is not None:
                     last_ts = raw_ts
-            print(f"[SSE] pre-populated {len(seen_ids)} seen IDs, last_ts={last_ts}")
+            logger.info(f"[SSE] pre-populated {len(seen_ids)} seen IDs, last_ts={last_ts}")
         except Exception as exc:
-            print(f"[SSE] initial fetch error: {exc}")
+            logger.warning(f"[SSE] initial fetch error: {exc}")
 
-        # Poll every second — only fetch messages newer than last_ts to minimize reads
+        # Poll every second — use a 1-second overlap (>= last_ts - 1s) to close the race
+        # window where a message arrives between last_ts capture and query execution.
+        # seen_ids deduplication ensures already-yielded messages are never re-sent.
         while True:
             await asyncio.sleep(1)
             try:
@@ -332,7 +349,8 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
                 def fetch_new(ts=current_ts):
                     q = db.collection("trips").document(trip_id).collection("messages")
                     if ts is not None:
-                        q = q.where("timestamp", ">", ts).order_by("timestamp")
+                        # Overlap by 1 second to avoid missing messages in the race window
+                        q = q.where("timestamp", ">=", ts - timedelta(seconds=1)).order_by("timestamp")
                     else:
                         q = q.order_by("timestamp")
                     return list(q.stream())
@@ -347,12 +365,14 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
                         data = _doc_to_dict(doc)
                         try:
                             payload = json.dumps(data)
-                            print(f"[SSE] yielding message {doc.id}")
+                            logger.debug(f"[SSE] yielding message {doc.id}")
                             yield f"data: {payload}\n\n"
                         except (TypeError, ValueError) as exc:
-                            print(f"[SSE] serialization error (message skipped): {exc}")
+                            logger.warning(f"[SSE] serialization error (message skipped): {exc}")
             except Exception as exc:
-                print(f"[SSE] poll error: {exc}")
+                logger.error(f"[SSE] poll error for trip={trip_id}: {exc}", exc_info=True)
+                yield f"event: error\ndata: {json.dumps({'message': 'stream error'})}\n\n"
+                return
     except BaseException as exc:
-        print(f"[SSE] generator crashed: {type(exc).__name__}: {exc}")
+        logger.error(f"[SSE] generator crashed: {type(exc).__name__}: {exc}")
         raise

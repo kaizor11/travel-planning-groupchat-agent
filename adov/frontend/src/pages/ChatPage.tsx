@@ -77,13 +77,20 @@ export default function ChatPage() {
       source.onerror = (e) => {
         console.error('[SSE] connection error:', e)
         source.close()
-        // Re-fetch the full message list to pick up messages sent while disconnected.
-        // The reconnected SSE generator pre-marks all existing docs as seen and won't
-        // re-emit them, so a fresh fetch is the only way to recover missed messages.
+        // Re-fetch the full message list to recover messages sent while disconnected.
+        // Merge with existing state: keep any optimistic messages (temp-* IDs) that the
+        // server hasn't confirmed yet so they don't flicker or disappear on reconnect.
         const token = idTokenRef.current
         if (tripId && token) {
           getMessages(tripId, token)
-            .then(({ messages: msgs }) => setMessages(msgs))
+            .then(({ messages: serverMsgs }) => {
+              setMessages(prev => {
+                const serverIds = new Set(serverMsgs.map(m => m.id))
+                // Preserve optimistic messages not yet present in the server response
+                const optimistic = prev.filter(m => !serverIds.has(m.id))
+                return [...serverMsgs, ...optimistic]
+              })
+            })
             .catch(err => console.error('[SSE] refetch after reconnect failed:', err))
         }
         retryTimer = setTimeout(connect, 2000)

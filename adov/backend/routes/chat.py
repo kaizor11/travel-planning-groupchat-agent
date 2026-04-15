@@ -3,10 +3,11 @@
 # All routes use the /api/trips prefix so Vite can proxy /api to FastAPI without
 # conflicting with React Router's client-side /trips/:tripId routes.
 import re
+from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from services.auth import get_current_user
 from services.firebase import (
@@ -20,6 +21,8 @@ from services.firebase import (
 )
 
 router = APIRouter()
+
+TRIP_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
 
 URL_REGEX = re.compile(r"https?://[^\s]+")
 MENTION_REGEX = re.compile(r"@adov\b", re.IGNORECASE)
@@ -41,7 +44,7 @@ PREFERENCE_SIGNAL_REGEX = re.compile(
 
 @router.get("/api/trips/{trip_id}")
 async def get_trip_messages(
-    trip_id: str,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
     current_user: dict = Depends(get_current_user),
 ):
     messages = get_messages(trip_id)
@@ -56,7 +59,7 @@ async def get_trip_messages(
 # ── SSE stream ────────────────────────────────────────────────────────────────
 
 @router.get("/api/trips/{trip_id}/stream")
-async def message_stream(trip_id: str):
+async def message_stream(trip_id: str = Path(..., pattern=TRIP_ID_PATTERN)):
     # SSE stream is unauthenticated — browsers can't set headers on EventSource.
     # The risk is low: messages are non-sensitive and the stream is read-only.
     return StreamingResponse(
@@ -78,8 +81,8 @@ class SendMessageBody(BaseModel):
 
 @router.post("/api/trips/{trip_id}/messages")
 async def send_message(
-    trip_id: str,
-    body: SendMessageBody,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    body: SendMessageBody = ...,
     current_user: dict = Depends(get_current_user),
 ):
     text = body.text.strip()
@@ -133,17 +136,33 @@ async def send_message(
 # ── Wish pool confirm / skip ───────────────────────────────────────────────────
 
 class WishPoolBody(BaseModel):
-    action: str  # "add" or "skip"
+    action: Literal["add", "skip"]
     destination: str
     tags: list[str] = []
     estimated_cost: str | None = None
     source_url: str | None = None
 
+    @field_validator("destination")
+    @classmethod
+    def destination_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("destination must be a non-empty string")
+        return v
+
+    @field_validator("tags")
+    @classmethod
+    def tags_valid(cls, v: list[str]) -> list[str]:
+        if len(v) > 10:
+            raise ValueError("tags must contain at most 10 items")
+        cleaned = [t.strip() for t in v if t.strip()]
+        return cleaned
+
 
 @router.post("/api/trips/{trip_id}/wishpool")
 async def wishpool_action(
-    trip_id: str,
-    body: WishPoolBody,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    body: WishPoolBody = ...,
     current_user: dict = Depends(get_current_user),
 ):
     uid = current_user["uid"]
@@ -166,7 +185,7 @@ async def wishpool_action(
 # ── Group invite ───────────────────────────────────────────────────────────────
 
 @router.get("/api/trips/{trip_id}/invite")
-async def get_invite_info(trip_id: str):
+async def get_invite_info(trip_id: str = Path(..., pattern=TRIP_ID_PATTERN)):
     """Public endpoint: returns trip preview for join page (no auth required)."""
     trip = get_trip(trip_id)
     member_count = len(trip.get("memberIds", [])) if trip else 0
@@ -179,7 +198,7 @@ async def get_invite_info(trip_id: str):
 
 @router.post("/api/trips/{trip_id}/join")
 async def join_trip(
-    trip_id: str,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
     current_user: dict = Depends(get_current_user),
 ):
     """Add the authenticated user to the trip's memberIds (idempotent)."""
@@ -192,7 +211,7 @@ async def join_trip(
 
 @router.get("/api/trips/{trip_id}/budget")
 async def get_budget_summary(
-    trip_id: str,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
     current_user: dict = Depends(get_current_user),
 ):
     """Return group min/max budget without exposing individual members' numbers."""

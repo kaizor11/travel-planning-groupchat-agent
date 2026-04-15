@@ -1,8 +1,10 @@
 # Proposals route: generate trip proposals, list them, and record in-chat votes.
 import asyncio
+import logging
 import urllib.parse
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel
 
 from services.auth import get_current_user
@@ -20,6 +22,9 @@ from services.anthropic_client import generate_trip_proposals
 from services.flights_service import get_cheapest_flight
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+TRIP_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -89,16 +94,28 @@ def _fetch_flight_estimates(trip_id: str, destinations: list[str], outbound_date
     return estimates
 
 
-# ── Generate proposals ────────────────────────────────────────────────────────
-
-@router.post("/api/trips/{trip_id}/proposals/generate")
-async def generate_proposals(
-    trip_id: str,
-    current_user: dict = Depends(get_current_user),
-):
+def _pick_outbound_date(windows: list[dict]) -> str:
     """
-    Generate 2–3 trip proposals from wish pool + availability + budget.
-    Writes each proposal to Firestore and posts a 'proposal' message to the chat.
+    Pick the soonest future window start date for flight lookup.
+    Falls back to 60 days from now if no windows exist or all are in the past.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    for window in windows:
+        start = window.get("start", "")[:10]
+        if start >= today:
+            return start
+    # No windows, or all stale — use a near-future fallback
+    return (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+
+
+# ── Shared proposal generation core (used by REST endpoint and @adov trigger) ──
+
+async def _run_proposal_generation(trip_id: str) -> dict:
+    """
+    Full proposal generation flow: wish pool check → budget → flights → Claude → write.
+    Returns {"ok": True, "proposals": [...]} or {"ok": False, "reason": "..."}.
+    Writes proposals and a proposal-type chat message to Firestore.
+    Raises HTTPException on unrecoverable errors.
     """
     loop = asyncio.get_running_loop()
 
@@ -131,8 +148,8 @@ async def generate_proposals(
     windows: list[dict] = (trip or {}).get("availableWindows", [])
     member_count = len(member_ids)
 
-    # Pick outbound date from first window for flight price lookup, else upcoming date
-    outbound_date = windows[0]["start"][:10] if windows else "2026-06-01"
+    # Pick nearest future window start date; fall back to 60 days from now
+    outbound_date = _pick_outbound_date(windows)
 
     # Fetch real flight prices from SerpAPI if members have home airports set
     destinations_to_check = [entry.get("destination", "") for entry in wish_pool if entry.get("destination")]
@@ -142,7 +159,7 @@ async def generate_proposals(
             lambda: _fetch_flight_estimates(trip_id, destinations_to_check, outbound_date, member_count),
         )
     except Exception as exc:
-        print(f"[proposals] flight estimate error (non-fatal): {exc}")
+        logger.warning(f"[proposals] flight estimate error (non-fatal): {exc}")
         flight_estimates = {}
 
     # Call Claude to generate proposals
@@ -158,7 +175,7 @@ async def generate_proposals(
             ),
         )
     except Exception as exc:
-        print(f"[proposals] Claude error: {exc}")
+        logger.error(f"[proposals] Claude error: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate proposals")
 
     # Handle thin-data signal from Claude
@@ -187,11 +204,10 @@ async def generate_proposals(
             "bookingSearchUrl": booking_url,
             "votes": {},
         }
-        proposal_id = add_proposal(trip_id, proposal_doc)
+        proposal_id = await loop.run_in_executor(None, lambda pd=proposal_doc: add_proposal(trip_id, pd))
         proposals_data.append({"proposalId": proposal_id, **proposal_doc})
 
     # Write a single proposal-type message to the chat with all proposals embedded
-    destinations_list = ", ".join(p["destination"] for p in proposals_data)
     add_message(
         trip_id,
         {
@@ -205,11 +221,26 @@ async def generate_proposals(
     return {"ok": True, "proposals": proposals_data}
 
 
+# ── Generate proposals ────────────────────────────────────────────────────────
+
+@router.post("/api/trips/{trip_id}/proposals/generate")
+async def generate_proposals(
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Generate 2–3 trip proposals from wish pool + availability + budget.
+    Writes each proposal to Firestore and posts a 'proposal' message to the chat.
+    """
+    result = await _run_proposal_generation(trip_id)
+    return result
+
+
 # ── List proposals ────────────────────────────────────────────────────────────
 
 @router.get("/api/trips/{trip_id}/proposals")
 async def list_proposals(
-    trip_id: str,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
     current_user: dict = Depends(get_current_user),
 ):
     """Return all proposals for a trip with current vote counts."""
@@ -226,21 +257,28 @@ class VoteBody(BaseModel):
 
 @router.post("/api/trips/{trip_id}/proposals/{proposal_id}/vote")
 async def cast_vote(
-    trip_id: str,
-    proposal_id: str,
-    body: VoteBody,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    proposal_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    body: VoteBody = ...,
     current_user: dict = Depends(get_current_user),
 ):
     """Record this user's vote and write an AI progress update to chat."""
     valid_votes = {"yes", "no", "maybe"}
     if body.vote not in valid_votes:
-        raise HTTPException(status_code=400, detail=f"vote must be one of {valid_votes}")
+        raise HTTPException(status_code=400, detail="vote must be one of: yes, no, maybe")
 
     uid = current_user["uid"]
     loop = asyncio.get_running_loop()
 
+    # Verify proposal exists before recording vote (prevent orphaned data)
+    all_proposals = await loop.run_in_executor(None, lambda: get_proposals(trip_id))
+    target = next((p for p in all_proposals if p["id"] == proposal_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+
     # Record the vote
     await loop.run_in_executor(None, lambda: record_vote(trip_id, proposal_id, uid, body.vote))
+    logger.info(f"[audit] user={uid} action=vote trip={trip_id} proposal={proposal_id} vote={body.vote}")
 
     # Refresh proposal to get updated vote map
     all_proposals = await loop.run_in_executor(None, lambda: get_proposals(trip_id))

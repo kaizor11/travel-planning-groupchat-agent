@@ -1,15 +1,20 @@
 # Calendar routes: POST /api/calendar/freebusy queries Google Calendar for all trip members,
 # finds overlapping free windows, stores them on the trip doc, and returns the result.
 # Uses each member's stored Google OAuth access token — tokens expire in ~1 hour.
+import logging
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from services.auth import get_current_user
-from services.firebase import get_trip_members, get_user, store_trip_availability
+from services.firebase import clear_user_calendar_token, get_trip_members, get_user, store_trip_availability
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+TRIP_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def _find_free_windows(
@@ -38,6 +43,11 @@ def _find_free_windows(
     for i in range(len(sorted_points) - 1):
         window_start = sorted_points[i]
         window_end = sorted_points[i + 1]
+
+        # Guard against zero-duration windows (e.g. two event boundaries align exactly)
+        if window_end <= window_start:
+            continue
+
         duration_hours = (window_end - window_start).total_seconds() / 3600
 
         if duration_hours < min_hours:
@@ -68,6 +78,13 @@ class FreeBusyBody(BaseModel):
     time_min: str  # ISO8601, e.g. "2025-06-01T00:00:00Z"
     time_max: str  # ISO8601, e.g. "2025-06-30T23:59:59Z"
 
+    @field_validator("trip_id")
+    @classmethod
+    def validate_trip_id(cls, v: str) -> str:
+        if not TRIP_ID_RE.match(v):
+            raise ValueError("trip_id must be 1–64 alphanumeric, hyphen, or underscore characters")
+        return v
+
 
 @router.post("/api/calendar/freebusy")
 async def get_freebusy(
@@ -92,6 +109,7 @@ async def get_freebusy(
 
     try:
         from googleapiclient.discovery import build  # type: ignore
+        from googleapiclient.errors import HttpError  # type: ignore
         from google.oauth2.credentials import Credentials  # type: ignore
     except ImportError:
         raise HTTPException(
@@ -126,13 +144,22 @@ async def get_freebusy(
 
             busy_intervals_per_user.append(intervals)
             members_checked += 1
-        except Exception as exc:
-            exc_str = str(exc).lower()
-            if "401" in exc_str or "invalid_grant" in exc_str or "unauthorized" in exc_str or "token" in exc_str:
+        except HttpError as exc:
+            # Use typed exception status codes instead of fragile string matching
+            if exc.resp.status in (401, 403):
                 members_token_expired += 1
-                print(f"[Calendar] token expired for {uid}: {exc}")
+                logger.info(f"[Calendar] token expired for uid={uid} (HTTP {exc.resp.status})")
+                try:
+                    clear_user_calendar_token(uid)
+                except Exception:
+                    pass
             else:
-                print(f"[Calendar] failed to query calendar for {uid}: {exc}")
+                logger.error(
+                    f"[Calendar] HttpError for uid={uid}: {exc.resp.status} — {exc.error_details}",
+                    exc_info=True,
+                )
+        except Exception as exc:
+            logger.error(f"[Calendar] Unexpected error for uid={uid}: {exc}", exc_info=True)
 
     if members_checked == 0:
         if members_token_expired > 0:

@@ -6,6 +6,9 @@ import re
 from anthropic import Anthropic
 from prompts.agent import AGENT_CONTEXT, PARSE_CONTENT_SYSTEM_PROMPT, PREFERENCE_EXTRACTION_PROMPT, PROPOSAL_GENERATION_PROMPT
 
+# Central model constant — override via ANTHROPIC_MODEL env var to switch models without code changes
+MODEL = os.getenv("ANTHROPIC_MODEL", MODEL)
+
 _client: Anthropic | None = None
 
 
@@ -75,7 +78,7 @@ def get_chat_response(
         system = AGENT_CONTEXT + "\n".join(injections)
 
     message = get_client().messages.create(
-        model="claude-sonnet-4-6",
+        model=MODEL,
         max_tokens=500,
         system=system,
         messages=merged,
@@ -89,7 +92,7 @@ def extract_preference(text: str) -> dict | None:
     Returns a dict with type/item/sentiment, or None if no clear preference found.
     """
     message = get_client().messages.create(
-        model="claude-sonnet-4-6",
+        model=MODEL,
         max_tokens=150,
         system=PREFERENCE_EXTRACTION_PROMPT,
         messages=[{"role": "user", "content": text}],
@@ -134,7 +137,7 @@ def generate_trip_proposals(
     user_content = f"Group travel context:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
 
     message = get_client().messages.create(
-        model="claude-sonnet-4-6",
+        model=MODEL,
         max_tokens=2000,
         system=AGENT_CONTEXT + PROPOSAL_GENERATION_PROMPT,
         messages=[{"role": "user", "content": user_content}],
@@ -169,7 +172,7 @@ def parse_travel_content(url: str | None, text: str | None) -> dict:
     user_content = "\n".join(parts)
 
     message = get_client().messages.create(
-        model="claude-sonnet-4-6",
+        model=MODEL,
         max_tokens=1000,
         system=PARSE_CONTENT_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_content}],
