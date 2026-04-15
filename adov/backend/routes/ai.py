@@ -123,6 +123,17 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
         # Inject available windows when all members are connected
         if _is_availability_question and trip:
             windows = trip.get("availableWindows", [])
+            if not windows:
+                # Auto-fetch free/busy so the agent can answer immediately without
+                # directing the user to a non-existent UI element.
+                try:
+                    from services.calendar_service import fetch_and_store_freebusy
+                    windows = await loop.run_in_executor(
+                        None, lambda: fetch_and_store_freebusy(trip_id)
+                    )
+                except Exception as _exc:
+                    logger.warning(f"[handle_mention] inline freebusy fetch failed: {_exc}")
+                    windows = []
             if windows:
                 window_lines = [
                     f"  • {w['start'][:10]} to {w['end'][:10]}" for w in windows[:10]
@@ -133,8 +144,9 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
                 )
             else:
                 extra_context_parts.append(
-                    "\n[CALENDAR NOTE: All members have connected their calendars, but no free windows have "
-                    "been computed yet. Tell the user to tap the calendar icon to run a free/busy check first.]"
+                    "\n[CALENDAR NOTE: All members have connected their calendars but no free windows "
+                    "could be computed — their tokens may have expired. Tell those members to reconnect "
+                    "via the profile icon (top-left) → Google Calendar → Reconnect.]"
                 )
 
         if proposals:

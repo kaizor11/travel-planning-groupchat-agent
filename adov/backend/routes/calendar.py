@@ -10,67 +10,12 @@ from pydantic import BaseModel, field_validator
 
 from services.auth import get_current_user
 from services.firebase import clear_user_calendar_token, get_trip_members, get_user, store_trip_availability
+from services.calendar_service import find_free_windows
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 TRIP_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
-
-def _find_free_windows(
-    busy_intervals_per_user: list[list[tuple[datetime, datetime]]],
-    time_min: datetime,
-    time_max: datetime,
-    min_hours: int = 2,
-) -> list[dict]:
-    """
-    Given busy intervals for N users, return free windows where ALL users are free.
-    Windows shorter than min_hours are excluded.
-    Returns list of {start, end} dicts with ISO strings.
-    """
-    # Collect all boundary points
-    points: set[datetime] = {time_min, time_max}
-    for user_busy in busy_intervals_per_user:
-        for start, end in user_busy:
-            if time_min <= start <= time_max:
-                points.add(start)
-            if time_min <= end <= time_max:
-                points.add(end)
-
-    sorted_points = sorted(points)
-    free_windows: list[dict] = []
-
-    for i in range(len(sorted_points) - 1):
-        window_start = sorted_points[i]
-        window_end = sorted_points[i + 1]
-
-        # Guard against zero-duration windows (e.g. two event boundaries align exactly)
-        if window_end <= window_start:
-            continue
-
-        duration_hours = (window_end - window_start).total_seconds() / 3600
-
-        if duration_hours < min_hours:
-            continue
-
-        # Check if any user is busy during this window
-        all_free = True
-        for user_busy in busy_intervals_per_user:
-            for busy_start, busy_end in user_busy:
-                # Overlap check: window_start < busy_end AND window_end > busy_start
-                if window_start < busy_end and window_end > busy_start:
-                    all_free = False
-                    break
-            if not all_free:
-                break
-
-        if all_free:
-            free_windows.append({
-                "start": window_start.isoformat(),
-                "end": window_end.isoformat(),
-            })
-
-    return free_windows
 
 
 class FreeBusyBody(BaseModel):
@@ -177,7 +122,7 @@ async def get_freebusy(
             "note": note,
         }
 
-    windows = _find_free_windows(busy_intervals_per_user, time_min, time_max)
+    windows = find_free_windows(busy_intervals_per_user, time_min, time_max)
     store_trip_availability(body.trip_id, windows)
 
     return {
