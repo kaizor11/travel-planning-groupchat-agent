@@ -17,7 +17,7 @@ def find_free_windows(
     busy_intervals_per_user: list[list[tuple[datetime, datetime]]],
     time_min: datetime,
     time_max: datetime,
-    min_hours: int = 24,
+    min_hours: int = 2,
 ) -> list[dict]:
     """Return windows where ALL users are simultaneously free (>= min_hours long)."""
     points: set[datetime] = {time_min, time_max}
@@ -58,6 +58,7 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
         from googleapiclient.discovery import build  # type: ignore
         from googleapiclient.errors import HttpError  # type: ignore
         from google.oauth2.credentials import Credentials  # type: ignore
+        from google.auth.exceptions import RefreshError  # type: ignore
     except ImportError:
         logger.warning("[calendar_service] google-api-python-client not installed — skipping freebusy fetch")
         return []
@@ -96,6 +97,13 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
                 for item in busy_raw
             ]
             busy_intervals_per_user.append(intervals)
+        except RefreshError:
+            token_failures += 1
+            logger.info(f"[calendar_service] no refresh token for uid={uid} — clearing stale access token")
+            try:
+                clear_user_calendar_token(uid)
+            except Exception:
+                pass
         except HttpError as exc:
             if exc.resp.status in (401, 403):
                 token_failures += 1
@@ -109,9 +117,9 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
         except Exception as exc:
             logger.error(f"[calendar_service] error for uid={uid}: {exc}", exc_info=True)
 
-    # If any token failed, we cannot compute a valid group overlap — partial data
-    # would silently exclude that member's busy times, making free windows inaccurate.
-    if token_failures > 0 or not busy_intervals_per_user:
+    # Skip members whose tokens failed; compute availability for remaining connected members.
+    # If all members failed, busy_intervals_per_user is empty and we return nothing.
+    if not busy_intervals_per_user:
         return []
 
     windows = find_free_windows(busy_intervals_per_user, time_min, time_max)

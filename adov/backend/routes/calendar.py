@@ -56,6 +56,7 @@ async def get_freebusy(
         from googleapiclient.discovery import build  # type: ignore
         from googleapiclient.errors import HttpError  # type: ignore
         from google.oauth2.credentials import Credentials  # type: ignore
+        from google.auth.exceptions import RefreshError  # type: ignore
     except ImportError:
         raise HTTPException(
             status_code=501,
@@ -89,6 +90,13 @@ async def get_freebusy(
 
             busy_intervals_per_user.append(intervals)
             members_checked += 1
+        except RefreshError:
+            members_token_expired += 1
+            logger.info(f"[Calendar] no refresh token for uid={uid} — clearing stale access token")
+            try:
+                clear_user_calendar_token(uid)
+            except Exception:
+                pass
         except HttpError as exc:
             # Use typed exception status codes instead of fragile string matching
             if exc.resp.status in (401, 403):
