@@ -134,8 +134,17 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
                 logger.warning(f"[handle_mention] inline freebusy fetch failed: {_exc}")
 
             if windows:
+                def _window_hours(w: dict) -> float:
+                    from datetime import datetime as _dt
+                    return (_dt.fromisoformat(w["end"]) - _dt.fromisoformat(w["start"])).total_seconds() / 3600
+
+                # Prefer trip-worthy windows (>= 2 full days); fall back to all windows if none qualify.
+                # Without this filter, short evening/weekend gaps crowd out the multi-day free periods
+                # that actually matter for trip planning.
+                trip_windows = [w for w in windows if _window_hours(w) >= 48]
+                display_windows = sorted(trip_windows, key=_window_hours, reverse=True)[:10] if trip_windows else windows[:10]
                 window_lines = [
-                    f"  • {w['start'][:10]} to {w['end'][:10]}" for w in windows[:10]
+                    f"  • {w['start'][:10]} to {w['end'][:10]}" for w in display_windows
                 ]
                 extra_context_parts.append(
                     "\n[AVAILABLE FREE WINDOWS (ground truth from Google Calendar — report these to the group):\n"

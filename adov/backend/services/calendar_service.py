@@ -17,7 +17,7 @@ def find_free_windows(
     busy_intervals_per_user: list[list[tuple[datetime, datetime]]],
     time_min: datetime,
     time_max: datetime,
-    min_hours: int = 2,
+    min_hours: int = 24,
 ) -> list[dict]:
     """Return windows where ALL users are simultaneously free (>= min_hours long)."""
     points: set[datetime] = {time_min, time_max}
