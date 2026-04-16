@@ -69,6 +69,7 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
     member_ids = get_trip_members(trip_id)
     busy_intervals_per_user: list[list[tuple[datetime, datetime]]] = []
 
+    token_failures = 0
     for uid in member_ids:
         user = get_user(uid)
         if not user:
@@ -97,6 +98,7 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
             busy_intervals_per_user.append(intervals)
         except HttpError as exc:
             if exc.resp.status in (401, 403):
+                token_failures += 1
                 logger.info(f"[calendar_service] token expired for uid={uid} — clearing")
                 try:
                     clear_user_calendar_token(uid)
@@ -107,7 +109,9 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
         except Exception as exc:
             logger.error(f"[calendar_service] error for uid={uid}: {exc}", exc_info=True)
 
-    if not busy_intervals_per_user:
+    # If any token failed, we cannot compute a valid group overlap — partial data
+    # would silently exclude that member's busy times, making free windows inaccurate.
+    if token_failures > 0 or not busy_intervals_per_user:
         return []
 
     windows = find_free_windows(busy_intervals_per_user, time_min, time_max)

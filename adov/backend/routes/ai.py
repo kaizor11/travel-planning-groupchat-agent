@@ -120,20 +120,19 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
         # ── Build extra context for Claude ────────────────────────────────────
         extra_context_parts: list[str] = []
 
-        # Inject available windows when all members are connected
-        if _is_availability_question and trip:
-            windows = trip.get("availableWindows", [])
-            if not windows:
-                # Auto-fetch free/busy so the agent can answer immediately without
-                # directing the user to a non-existent UI element.
-                try:
-                    from services.calendar_service import fetch_and_store_freebusy
-                    windows = await loop.run_in_executor(
-                        None, lambda: fetch_and_store_freebusy(trip_id)
-                    )
-                except Exception as _exc:
-                    logger.warning(f"[handle_mention] inline freebusy fetch failed: {_exc}")
-                    windows = []
+        # Inject available windows when all members are connected.
+        # Always fetch fresh — never use cached availableWindows — so that expired tokens
+        # are detected and cleared before we report any availability data.
+        if _is_availability_question:
+            windows: list[dict] = []
+            try:
+                from services.calendar_service import fetch_and_store_freebusy
+                windows = await loop.run_in_executor(
+                    None, lambda: fetch_and_store_freebusy(trip_id)
+                )
+            except Exception as _exc:
+                logger.warning(f"[handle_mention] inline freebusy fetch failed: {_exc}")
+
             if windows:
                 window_lines = [
                     f"  • {w['start'][:10]} to {w['end'][:10]}" for w in windows[:10]
@@ -143,11 +142,26 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
                     + "\n".join(window_lines) + "]"
                 )
             else:
-                extra_context_parts.append(
-                    "\n[CALENDAR NOTE: All members have connected their calendars but no free windows "
-                    "could be computed — their tokens may have expired. Tell those members to reconnect "
-                    "via the profile icon (top-left) → Google Calendar → Reconnect.]"
-                )
+                # Re-fetch member status: fetch_and_store_freebusy may have cleared expired
+                # tokens, so the stale `members` list is no longer accurate.
+                refreshed_members = get_trip_member_status(trip_id)
+                expired = [m["name"] for m in refreshed_members if not m["calendarConnected"]]
+                if expired:
+                    expired_str = (
+                        " and ".join(expired)
+                        if len(expired) <= 2
+                        else ", ".join(expired[:-1]) + f", and {expired[-1]}"
+                    )
+                    extra_context_parts.append(
+                        f"\n[CALENDAR NOTE: {expired_str}'s Google Calendar token has expired. "
+                        f"Tell them to tap the profile icon (top-left) → Google Calendar → Reconnect. "
+                        f"Do NOT report any availability windows until all members have reconnected.]"
+                    )
+                else:
+                    extra_context_parts.append(
+                        "\n[CALENDAR NOTE: All calendars are connected but no overlapping free windows "
+                        "were found in the next 90 days. Tell the group their schedules may be fully booked.]"
+                    )
 
         if proposals:
             vote_lines = ["[ACTIVE PROPOSALS AND CURRENT VOTES — ground truth:]"]

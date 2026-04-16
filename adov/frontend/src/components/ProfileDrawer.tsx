@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { User } from 'firebase/auth'
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth'
-import { auth, googleProvider } from '../lib/firebase'
+import { auth } from '../lib/firebase'
 import { getProfile, updateProfile, updateCalendarToken } from '../api/client'
 
 const PREFERENCE_TAGS = ['beach', 'hiking', 'city', 'adventure', 'culture', 'food', 'relaxation', 'nightlife', 'nature', 'ski']
@@ -65,7 +65,15 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
     setCalendarConnecting(true)
     setCalendarError(null)
     try {
-      const result = await signInWithPopup(auth, googleProvider)
+      // Create a fresh provider each time with prompt:'consent' so Google always
+      // re-issues an access token that includes the calendar.readonly scope.
+      // Using the module-level singleton with prompt:'select_account' can skip
+      // consent for already-signed-in users, returning a token without calendar scope.
+      const calendarProvider = new GoogleAuthProvider()
+      calendarProvider.addScope('https://www.googleapis.com/auth/calendar.readonly')
+      calendarProvider.setCustomParameters({ prompt: 'consent' })
+
+      const result = await signInWithPopup(auth, calendarProvider)
       const credential = GoogleAuthProvider.credentialFromResult(result)
       const freshIdToken = await result.user.getIdToken(/* forceRefresh */ true)
       if (!credential?.accessToken) {
@@ -73,9 +81,10 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
         return
       }
       await updateCalendarToken(credential.accessToken, freshIdToken)
-      // Set directly — don't rely on the useEffect re-fetching, which could race
-      // against this write and briefly show "Not connected".
-      setCalendarConnected(true)
+      // Verify by re-fetching the profile so the UI reflects actual backend state
+      // rather than an optimistic flag that could be wrong if the write failed silently.
+      const profile = await getProfile(freshIdToken)
+      setCalendarConnected(profile.calendarConnected ?? true)
     } catch {
       setCalendarError('Failed to connect calendar. Try again.')
     } finally {
