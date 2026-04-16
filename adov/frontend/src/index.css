@@ -59,6 +59,14 @@ body {
   color: #fff;
   border-radius: 18px 18px 18px 4px;
 }
+/* Markdown prose inside AI bubbles */
+.im-bubble-ai p { margin: 0 0 6px; }
+.im-bubble-ai p:last-child { margin-bottom: 0; }
+.im-bubble-ai strong { font-weight: 700; }
+.im-bubble-ai em { font-style: italic; }
+.im-bubble-ai ul, .im-bubble-ai ol { margin: 4px 0 6px 16px; padding: 0; }
+.im-bubble-ai li { margin-bottom: 2px; }
+.im-bubble-ai a { color: #cfe7ff; text-decoration: underline; }
 
 /* CSS tail triangles */
 .im-bubble-sent::after {

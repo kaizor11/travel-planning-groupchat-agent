@@ -1,6 +1,7 @@
 // Renders a single chat message as a sent (blue), received (gray), or AI (purple) bubble.
 // Received messages show the sender's name above the bubble for multi-user attribution.
 // Timestamps are displayed below each bubble as relative time (e.g. "2m ago").
+import ReactMarkdown from 'react-markdown'
 import type { Message } from '../types/message'
 import WishPoolCard from './WishPoolCard'
 import ProposalCard from './ProposalCard'
@@ -61,7 +62,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
         <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
         <div className="flex flex-col gap-2" style={{ maxWidth: '320px' }}>
           <div className="relative">
-            <div className="im-bubble im-bubble-ai">{message.text}</div>
+            <div className="im-bubble im-bubble-ai"><ReactMarkdown>{message.text}</ReactMarkdown></div>
             <div className="im-bubble-ai-clear" />
           </div>
           {message.proposalsData.map(proposal => (
@@ -85,7 +86,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
         <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
         <div className="flex flex-col gap-1.5">
           <div className="relative">
-            <div className="im-bubble im-bubble-ai">{message.text}</div>
+            <div className="im-bubble im-bubble-ai"><ReactMarkdown>{message.text}</ReactMarkdown></div>
             <div className="im-bubble-ai-clear" />
           </div>
           <WishPoolCard message={message} tripId={tripId} idToken={idToken} />
@@ -115,7 +116,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
         <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
         <div className="flex flex-col gap-0.5 max-w-[280px]">
           <div className="relative">
-            <div className="im-bubble im-bubble-ai">{message.text}</div>
+            <div className="im-bubble im-bubble-ai"><ReactMarkdown>{message.text}</ReactMarkdown></div>
             <div className="im-bubble-ai-clear" />
           </div>
           {relativeTime && <span style={timestampStyle}>{relativeTime}</span>}
