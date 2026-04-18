@@ -17,6 +17,7 @@ from services.firebase import (
     get_messages,
     get_trip,
     get_user,
+    reset_trip,
     stream_messages,
 )
 
@@ -205,6 +206,18 @@ async def join_trip(
     uid = current_user["uid"]
     add_trip_member(trip_id, uid)
     return {"ok": True, "trip_id": trip_id, "user_id": uid}
+
+
+# ── Demo reset ────────────────────────────────────────────────────────────────
+
+@router.post("/api/trips/{trip_id}/reset")
+async def reset_trip_endpoint(
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    current_user: dict = Depends(get_current_user),
+):
+    """Wipe all messages, preferences, wish pool, proposals, and calendar tokens for the trip."""
+    reset_trip(trip_id)
+    return {"ok": True}
 
 
 # ── Budget reconciliation (group summary — private) ────────────────────────────

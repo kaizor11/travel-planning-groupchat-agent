@@ -1,6 +1,6 @@
 // TypeScript interfaces for all message and wish pool data shapes exchanged with the backend.
 
-export type MessageType = 'user' | 'ai' | 'wishpool_confirm' | 'vote' | 'proposal'
+export type MessageType = 'user' | 'ai' | 'wishpool_confirm' | 'vote' | 'proposal' | 'reset'
 
 export interface ParsedData {
   destination: string

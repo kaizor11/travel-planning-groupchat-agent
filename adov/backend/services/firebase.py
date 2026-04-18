@@ -79,7 +79,9 @@ def get_messages(trip_id: str) -> list[dict]:
         .collection("messages")
         .order_by("timestamp")
     )
-    return [_doc_to_dict(doc) for doc in q.stream()]
+    msgs = [_doc_to_dict(doc) for doc in q.stream()]
+    # Filter out internal reset-signal messages — they're only consumed by the SSE stream.
+    return [m for m in msgs if m.get("type") != "reset"]
 
 
 # ── Write ─────────────────────────────────────────────────────────────────────
@@ -181,6 +183,34 @@ def clear_user_calendar_token(uid: str) -> None:
     db.collection("users").document(uid).update(
         {"googleCalendarToken": firestore.DELETE_FIELD}
     )
+
+
+def reset_trip(trip_id: str) -> None:
+    """Wipe all trip data and member calendar tokens. For demo reset only."""
+    db = get_db()
+    # Capture member list before wiping memberIds
+    member_ids = get_trip_members(trip_id)
+    for subcol in ("messages", "preferences", "wishPool", "proposals"):
+        docs = list(
+            db.collection("trips").document(trip_id).collection(subcol).stream()
+        )
+        for doc in docs:
+            doc.reference.delete()
+    # Clear transient trip fields and kick all members
+    update_fields: dict = {"memberIds": []}
+    try:
+        update_fields["availableWindows"] = firestore.DELETE_FIELD
+    except Exception:
+        pass
+    db.collection("trips").document(trip_id).set(update_fields, merge=True)
+    # Clear calendar tokens for everyone who was in the trip
+    for uid in member_ids:
+        try:
+            clear_user_calendar_token(uid)
+        except Exception:
+            pass
+    # Write a reset-signal message so the SSE stream notifies all connected clients.
+    add_message(trip_id, {"senderId": "system", "type": "reset", "text": ""})
 
 
 # ── Trip membership helpers ──────────────────────────────────────────────────

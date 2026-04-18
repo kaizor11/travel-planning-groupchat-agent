@@ -224,6 +224,17 @@ export async function castVote(
   return res.json()
 }
 
+// ── Demo reset ────────────────────────────────────────────────────────────────
+
+export async function resetTrip(tripId: string, idToken: string): Promise<void> {
+  const res = await fetchWithAuth(
+    `${API_BASE}/api/trips/${tripId}/reset`,
+    { method: 'POST', headers: authHeaders(idToken) },
+    idToken,
+  )
+  if (!res.ok) throw new Error('Failed to reset trip')
+}
+
 // ── Calendar free/busy ────────────────────────────────────────────────────────
 
 export async function getFreeBusy(

@@ -1,9 +1,11 @@
 // Main chat page: owns message state, manages SSE subscription, and composes all chat UI components.
 // Uses the authenticated Firebase user for identity — no more hardcoded TEMP_USER_ID.
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
+import { signOut } from 'firebase/auth'
+import { auth } from '../lib/firebase'
 import type { Message } from '../types/message'
-import { getMessages, sendMessage, createSSEStream } from '../api/client'
+import { getMessages, sendMessage, createSSEStream, resetTrip } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import ChatHeader from '../components/ChatHeader'
 import ChatInput from '../components/ChatInput'
@@ -12,6 +14,7 @@ import ProfileDrawer from '../components/ProfileDrawer'
 
 export default function ChatPage() {
   const { tripId } = useParams<{ tripId: string }>()
+  const navigate = useNavigate()
   const { user, idToken } = useAuth()
   const [messages, setMessages] = useState<Message[]>([])
   const [showProfile, setShowProfile] = useState(false)
@@ -64,6 +67,12 @@ export default function ChatPage() {
         try {
           const msg: Message = JSON.parse(e.data)
           console.log('[SSE] parsed:', msg.type, msg.senderId)
+          // Reset signal: sign out and kick all connected clients to the join page
+          if (msg.type === 'reset') {
+            source.close()
+            signOut(auth).finally(() => navigate(`/join/${tripId}`))
+            return
+          }
           // Skip own messages — already shown optimistically on send
           if (msg.senderId === currentUserIdRef.current) {
             console.log('[SSE] skipped (own message)')
@@ -104,6 +113,14 @@ export default function ChatPage() {
     }
   }, [tripId])
 
+  const handleReset = useCallback(async () => {
+    if (!tripId || !idToken) return
+    if (!window.confirm('Reset this session? This clears all messages, calendar connections, and preferences.')) return
+    await resetTrip(tripId, idToken)
+    await signOut(auth)
+    navigate(`/join/${tripId}`)
+  }, [tripId, idToken, navigate])
+
   const handleSend = useCallback(async (text: string) => {
     if (!tripId || !currentUserId || !idToken) return
 
@@ -138,6 +155,7 @@ export default function ChatPage() {
       <ChatHeader
         tripId={tripId}
         onProfileOpen={() => setShowProfile(true)}
+        onReset={handleReset}
       />
 
       <div

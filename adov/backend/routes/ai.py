@@ -2,7 +2,7 @@
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -146,9 +146,14 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
                 window_lines = [
                     f"  • {w['start'][:10]} to {w['end'][:10]}" for w in display_windows
                 ]
+                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                query_end = (datetime.now(timezone.utc) + timedelta(days=365)).strftime("%Y-%m-%d")
                 extra_context_parts.append(
-                    "\n[AVAILABLE FREE WINDOWS (ground truth from Google Calendar — report these to the group):\n"
-                    + "\n".join(window_lines) + "]"
+                    f"\n[TODAY'S DATE: {today_str}. Calendar queried from {today_str} to {query_end}."
+                    "\nAVAILABLE FREE WINDOWS (ground truth from Google Calendar — periods NOT listed are busy):\n"
+                    + "\n".join(window_lines)
+                    + f"\nWhen asked about a specific date or week, check if it overlaps any window above."
+                    f" Do NOT say a date is 'outside the planning window' unless it is after {query_end}.]"
                 )
             else:
                 # Re-fetch member status: fetch_and_store_freebusy may have cleared expired

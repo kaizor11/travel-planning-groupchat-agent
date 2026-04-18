@@ -75,16 +75,16 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
 
       const result = await signInWithPopup(auth, calendarProvider)
       const credential = GoogleAuthProvider.credentialFromResult(result)
-      const freshIdToken = await result.user.getIdToken(/* forceRefresh */ true)
       if (!credential?.accessToken) {
         setCalendarError('No calendar token returned. Try signing out and back in.')
         return
       }
-      await updateCalendarToken(credential.accessToken, freshIdToken)
-      // Verify by re-fetching the profile so the UI reflects actual backend state
-      // rather than an optimistic flag that could be wrong if the write failed silently.
-      const profile = await getProfile(freshIdToken)
-      setCalendarConnected(profile.calendarConnected ?? true)
+      // Use the idToken prop (the session token proven valid by existing GET calls)
+      // instead of result.user.getIdToken(), which can fail verify_id_token right
+      // after signInWithPopup completes its session handshake.
+      await updateCalendarToken(credential.accessToken, idToken)
+      const profile = await getProfile(idToken)
+      setCalendarConnected(profile.calendarConnected ?? false)
     } catch {
       setCalendarError('Failed to connect calendar. Try again.')
     } finally {
