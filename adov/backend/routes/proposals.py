@@ -28,6 +28,40 @@ logger = logging.getLogger(__name__)
 
 TRIP_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
 
+# Aliases for common non-canonical city names Claude might return despite prompt instructions.
+# Key: lowercase raw string → Value: canonical display name.
+_CITY_ALIASES: dict[str, str] = {
+    "nyc": "New York City, NY",
+    "new york": "New York City, NY",
+    "manhattan": "New York City, NY",
+    "brooklyn": "New York City, NY",
+    "queens": "New York City, NY",
+    "the bronx": "New York City, NY",
+    "la": "Los Angeles, CA",
+    "hollywood": "Los Angeles, CA",
+    "sf": "San Francisco, CA",
+    "san fran": "San Francisco, CA",
+    "vegas": "Las Vegas, NV",
+    "london": "London, UK",
+    "paris": "Paris, France",
+    "tokyo": "Tokyo, Japan",
+    "rome": "Rome, Italy",
+    "barcelona": "Barcelona, Spain",
+    "amsterdam": "Amsterdam, Netherlands",
+    "bangkok": "Bangkok, Thailand",
+    "bali": "Bali, Indonesia",
+    "cancun": "Cancún, Mexico",
+}
+
+
+def _normalize_destination(dest: str) -> tuple[str, str]:
+    """Return (canonical_key, display_name) for a destination string, resolving common aliases."""
+    raw_lower = dest.lower().strip()
+    if raw_lower in _CITY_ALIASES:
+        canonical = _CITY_ALIASES[raw_lower]
+        return canonical.lower(), canonical
+    return raw_lower, dest
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -54,12 +88,12 @@ def _aggregate_destinations(wish_pool: list[dict], member_count: int) -> list[di
         if not dest:
             continue
         accepted = _get_accepted_by(entry)
-        key = dest.lower()
+        key, display = _normalize_destination(dest)
         dest_map[key]["entries"].append(entry)
         dest_map[key]["unique_acceptors"].update(accepted)
         dest_map[key]["total_votes"] += len(accepted)
         if not dest_map[key]["display_name"]:
-            dest_map[key]["display_name"] = dest
+            dest_map[key]["display_name"] = display
 
     threshold = member_count / 2  # strict majority: unique_acceptors count must be > threshold
     qualified = [
@@ -168,6 +202,41 @@ def _pick_outbound_date(windows: list[dict]) -> str:
             return start
     # No windows, or all stale — use a near-future fallback
     return (datetime.now() + timedelta(days=60)).strftime("%Y-%m-%d")
+
+
+def _declare_winning_destination(trip_id: str, proposals: list[dict], member_count: int) -> None:
+    """
+    Compare yes-vote counts across all proposals and write a single winner announcement.
+    Called once when every member has voted on every proposal.
+    """
+    scored = [
+        (sum(1 for v in p.get("votes", {}).values() if v == "yes"), p.get("destination", "this destination"))
+        for p in proposals
+    ]
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    if not scored:
+        return
+
+    top_yes, top_dest = scored[0]
+    if top_yes == 0:
+        ai_text = (
+            "All votes are in — no destination received a yes vote. "
+            "Want to revisit the wish pool or generate new proposals?"
+        )
+    elif len(scored) > 1 and scored[1][0] == top_yes:
+        tied = [dest for yes, dest in scored if yes == top_yes]
+        tied_str = " and ".join(f"**{d}**" for d in tied)
+        ai_text = (
+            f"All votes are in! It's a tie between {tied_str} with {top_yes} yes vote(s) each. "
+            "Group, you decide — want to do another round?"
+        )
+    else:
+        ai_text = (
+            f"All votes are in! **{top_dest}** wins with {top_yes} yes vote(s). Time to book!"
+        )
+
+    add_message(trip_id, {"senderId": "ai", "text": ai_text, "type": "ai"})
 
 
 # ── Shared proposal generation core (used by REST endpoint and @adov trigger) ──
@@ -411,5 +480,11 @@ async def cast_vote(
             )
 
     add_message(trip_id, {"senderId": "ai", "text": ai_text, "type": "ai"})
+
+    # When multiple proposals exist, declare the cross-proposal winner once all are fully voted.
+    if len(all_proposals) > 1:
+        all_fully_voted = all(len(p.get("votes", {})) >= member_count for p in all_proposals)
+        if all_fully_voted:
+            _declare_winning_destination(trip_id, all_proposals, member_count)
 
     return {"ok": True, "votes": votes, "tally": tally}

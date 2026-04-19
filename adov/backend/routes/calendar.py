@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from services.auth import get_current_user
-from services.firebase import clear_user_calendar_token, get_trip_members, get_user, store_trip_availability
-from services.calendar_service import find_free_windows
+from services.firebase import get_trip_members, get_user, store_trip_availability
+from services.calendar_service import find_free_windows, query_user_freebusy
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -46,22 +46,18 @@ async def get_freebusy(
     if not member_ids:
         return {"windows": [], "membersChecked": 0, "note": "No members found for trip"}
 
-    # Collect busy intervals from each member's Google Calendar
-    busy_intervals_per_user: list[list[tuple[datetime, datetime]]] = []
-    members_checked = 0
-    members_token_expired = 0
-    members_no_token = 0
-
     try:
-        from googleapiclient.discovery import build  # type: ignore
-        from googleapiclient.errors import HttpError  # type: ignore
-        from google.oauth2.credentials import Credentials  # type: ignore
-        from google.auth.exceptions import RefreshError  # type: ignore
+        from googleapiclient.discovery import build  # type: ignore  # noqa: F401
     except ImportError:
         raise HTTPException(
             status_code=501,
             detail="Google Calendar client not installed. Run: pip install google-api-python-client google-auth",
         )
+
+    busy_intervals_per_user: list[list[tuple[datetime, datetime]]] = []
+    members_checked = 0
+    members_token_expired = 0
+    members_no_token = 0
 
     for uid in member_ids:
         user = get_user(uid)
@@ -70,49 +66,14 @@ async def get_freebusy(
         token = user.get("googleCalendarToken")
         if not token:
             members_no_token += 1
-            continue  # skip members who haven't connected Calendar
+            continue
 
-        try:
-            creds = Credentials(token=token)
-            service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-            result = service.freebusy().query(body={
-                "timeMin": time_min.isoformat(),
-                "timeMax": time_max.isoformat(),
-                "items": [{"id": "primary"}],
-            }).execute()
-
-            busy_raw = result.get("calendars", {}).get("primary", {}).get("busy", [])
-            intervals: list[tuple[datetime, datetime]] = []
-            for item in busy_raw:
-                s = datetime.fromisoformat(item["start"].replace("Z", "+00:00"))
-                e = datetime.fromisoformat(item["end"].replace("Z", "+00:00"))
-                intervals.append((s, e))
-
+        intervals = query_user_freebusy(uid, token, time_min, time_max)
+        if intervals is None:
+            members_token_expired += 1
+        else:
             busy_intervals_per_user.append(intervals)
             members_checked += 1
-        except RefreshError:
-            members_token_expired += 1
-            logger.info(f"[Calendar] no refresh token for uid={uid} — clearing stale access token")
-            try:
-                clear_user_calendar_token(uid)
-            except Exception:
-                pass
-        except HttpError as exc:
-            # Use typed exception status codes instead of fragile string matching
-            if exc.resp.status in (401, 403):
-                members_token_expired += 1
-                logger.info(f"[Calendar] token expired for uid={uid} (HTTP {exc.resp.status})")
-                try:
-                    clear_user_calendar_token(uid)
-                except Exception:
-                    pass
-            else:
-                logger.error(
-                    f"[Calendar] HttpError for uid={uid}: {exc.resp.status} — {exc.error_details}",
-                    exc_info=True,
-                )
-        except Exception as exc:
-            logger.error(f"[Calendar] Unexpected error for uid={uid}: {exc}", exc_info=True)
 
     if members_checked == 0:
         if members_token_expired > 0:

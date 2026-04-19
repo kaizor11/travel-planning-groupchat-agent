@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+from constants import URL_REGEX
 from services.activity_log import log_event
 from services.anthropic_client import extract_preference, get_chat_response, parse_travel_content
 from services.firebase import (
@@ -25,8 +26,6 @@ from services.instagram_scraper import scrapify_reel
 from firebase_admin import firestore
 
 router = APIRouter()
-
-URL_REGEX = re.compile(r"https?://[^\s]+")
 
 SOCIAL_MEDIA_REGEX = re.compile(
     r"tiktok|youtube|youtu\.be|twitter|x\.com", re.IGNORECASE

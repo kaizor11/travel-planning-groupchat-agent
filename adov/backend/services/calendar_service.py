@@ -46,6 +46,65 @@ def find_free_windows(
     return free_windows
 
 
+def query_user_freebusy(
+    uid: str,
+    token: str,
+    time_min: datetime,
+    time_max: datetime,
+) -> list[tuple[datetime, datetime]] | None:
+    """
+    Query Google Calendar freebusy for a single user token.
+
+    Returns a list of busy intervals on success (possibly empty), or None on any
+    auth/token failure. On auth failure the stale token is cleared from Firestore.
+    Callers should treat None as a token failure (expired or invalid).
+
+    Raises ImportError if the Google client libraries are not installed.
+    """
+    from googleapiclient.discovery import build  # type: ignore
+    from googleapiclient.errors import HttpError  # type: ignore
+    from google.oauth2.credentials import Credentials  # type: ignore
+    from google.auth.exceptions import RefreshError  # type: ignore
+
+    try:
+        creds = Credentials(token=token)
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        result = service.freebusy().query(body={
+            "timeMin": time_min.isoformat(),
+            "timeMax": time_max.isoformat(),
+            "items": [{"id": "primary"}],
+        }).execute()
+        busy_raw = result.get("calendars", {}).get("primary", {}).get("busy", [])
+        return [
+            (
+                datetime.fromisoformat(item["start"].replace("Z", "+00:00")),
+                datetime.fromisoformat(item["end"].replace("Z", "+00:00")),
+            )
+            for item in busy_raw
+        ]
+    except RefreshError:
+        logger.info(f"[calendar_service] no refresh token for uid={uid} — clearing stale access token")
+        try:
+            clear_user_calendar_token(uid)
+        except Exception:
+            pass
+        return None
+    except HttpError as exc:
+        if exc.resp.status in (401, 403):
+            logger.info(f"[calendar_service] token expired for uid={uid} — clearing")
+            try:
+                clear_user_calendar_token(uid)
+            except Exception:
+                pass
+            return None
+        else:
+            logger.error(f"[calendar_service] HttpError for uid={uid}: {exc}", exc_info=True)
+            return None
+    except Exception as exc:
+        logger.error(f"[calendar_service] error for uid={uid}: {exc}", exc_info=True)
+        return None
+
+
 def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
     """
     Query Google Calendar for all trip members, compute overlapping free windows,
@@ -55,10 +114,7 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
     no members have valid calendar tokens.
     """
     try:
-        from googleapiclient.discovery import build  # type: ignore
-        from googleapiclient.errors import HttpError  # type: ignore
-        from google.oauth2.credentials import Credentials  # type: ignore
-        from google.auth.exceptions import RefreshError  # type: ignore
+        from googleapiclient.discovery import build  # type: ignore  # noqa: F401
     except ImportError:
         logger.warning("[calendar_service] google-api-python-client not installed — skipping freebusy fetch")
         return []
@@ -70,7 +126,6 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
     member_ids = get_trip_members(trip_id)
     busy_intervals_per_user: list[list[tuple[datetime, datetime]]] = []
 
-    token_failures = 0
     for uid in member_ids:
         user = get_user(uid)
         if not user:
@@ -79,43 +134,9 @@ def fetch_and_store_freebusy(trip_id: str, days: int = 90) -> list[dict]:
         if not token:
             continue
 
-        try:
-            creds = Credentials(token=token)
-            service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-            result = service.freebusy().query(body={
-                "timeMin": time_min.isoformat(),
-                "timeMax": time_max.isoformat(),
-                "items": [{"id": "primary"}],
-            }).execute()
-
-            busy_raw = result.get("calendars", {}).get("primary", {}).get("busy", [])
-            intervals: list[tuple[datetime, datetime]] = [
-                (
-                    datetime.fromisoformat(item["start"].replace("Z", "+00:00")),
-                    datetime.fromisoformat(item["end"].replace("Z", "+00:00")),
-                )
-                for item in busy_raw
-            ]
+        intervals = query_user_freebusy(uid, token, time_min, time_max)
+        if intervals is not None:
             busy_intervals_per_user.append(intervals)
-        except RefreshError:
-            token_failures += 1
-            logger.info(f"[calendar_service] no refresh token for uid={uid} — clearing stale access token")
-            try:
-                clear_user_calendar_token(uid)
-            except Exception:
-                pass
-        except HttpError as exc:
-            if exc.resp.status in (401, 403):
-                token_failures += 1
-                logger.info(f"[calendar_service] token expired for uid={uid} — clearing")
-                try:
-                    clear_user_calendar_token(uid)
-                except Exception:
-                    pass
-            else:
-                logger.error(f"[calendar_service] HttpError for uid={uid}: {exc}", exc_info=True)
-        except Exception as exc:
-            logger.error(f"[calendar_service] error for uid={uid}: {exc}", exc_info=True)
 
     # Skip members whose tokens failed; compute availability for remaining connected members.
     # If all members failed, busy_intervals_per_user is empty and we return nothing.

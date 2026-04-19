@@ -128,7 +128,7 @@ The user has shared a URL or travel-related text in the group chat. Extract the 
 
 JSON shape:
 {{
-  "destination": "specific city or region, empty string if none found",
+  "destination": "canonical city name — always use 'City, State' for US (e.g. 'New York City, NY', 'Los Angeles, CA', 'Chicago, IL') or 'City, Country' for international (e.g. 'Paris, France', 'Tokyo, Japan'). Never use abbreviations (NYC, LA, SF), neighborhood names (Manhattan, Brooklyn, Hollywood), or region names. Empty string if no city can be determined.",
   "tags": ["activity/vibe tags — e.g. beach, hiking, city, food, culture, nightlife, relaxed, adventurous, luxury, budget"],
   "estimatedCost": "one of: budget, mid-range, luxury — omit this key if not determinable",
   "confidence": 0.0

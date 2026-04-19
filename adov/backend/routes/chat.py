@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Path
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from constants import URL_REGEX
 from services.activity_log import log_event
 from services.auth import get_current_user
 from services.firebase import (
@@ -25,8 +26,6 @@ from services.firebase import (
 router = APIRouter()
 
 TRIP_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
-
-URL_REGEX = re.compile(r"https?://[^\s]+")
 MENTION_REGEX = re.compile(r"@adov\b", re.IGNORECASE)
 PROPOSAL_TRIGGER_REGEX = re.compile(
     r"\b(trip (ideas?|proposals?|suggestions?)|where should we (go|travel)|"

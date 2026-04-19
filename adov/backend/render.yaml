@@ -13,3 +13,9 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: SERPAPI_API_KEY
+        sync: false
+      - key: APIFY_KEY
+        sync: false
+      - key: TASK_URL
+        sync: false
