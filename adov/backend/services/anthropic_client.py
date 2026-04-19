@@ -1,4 +1,5 @@
 # Anthropic service: lazy Claude client initialization, JSON fence stripping, and travel content parsing.
+import datetime
 import json
 import os
 import re
@@ -10,6 +11,12 @@ from prompts.agent import AGENT_CONTEXT, PARSE_CONTENT_SYSTEM_PROMPT, PREFERENCE
 MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 _client: Anthropic | None = None
+
+
+def _json_default(obj):
+    if isinstance(obj, datetime.datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def get_client() -> Anthropic:
@@ -108,33 +115,34 @@ def extract_preference(text: str) -> dict | None:
 
 
 def generate_trip_proposals(
-    wish_pool: list[dict],
+    aggregated_destinations: list[dict],
     windows: list[dict],
     budget: dict,
     member_count: int,
     flight_estimates: dict[str, int | None] | None = None,
 ) -> list[dict]:
     """
-    Generate 2-3 structured trip proposals based on group context.
+    Generate one structured trip proposal per aggregated destination.
 
     Args:
-        wish_pool: Confirmed wish pool entries [{destination, tags, estimatedCost, sourceUrl}, ...]
+        aggregated_destinations: Pre-filtered, vote-ranked list of
+            [{destination, entries, total_votes}, ...] (max 5, strict-majority accepted)
         windows: Available calendar windows [{start, end}, ...]
         budget: Group budget {group_min, group_max, members_with_budget}
         member_count: Total number of trip members
         flight_estimates: Optional map of destination → cheapest flight price in USD
 
     Returns:
-        List of proposal dicts, or raises ValueError if Claude returns unparseable output.
+        List of proposal dicts (one per destination), or raises ValueError on unparseable output.
     """
     context = {
-        "wishPool": wish_pool,
+        "destinations": aggregated_destinations,
         "availableWindows": windows,
         "groupBudget": budget,
         "memberCount": member_count,
         "flightEstimates": flight_estimates or {},
     }
-    user_content = f"Group travel context:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    user_content = f"Group travel context:\n{json.dumps(context, ensure_ascii=False, indent=2, default=_json_default)}"
 
     message = get_client().messages.create(
         model=MODEL,
@@ -151,9 +159,8 @@ def generate_trip_proposals(
     except json.JSONDecodeError as exc:
         raise ValueError(f"Claude returned non-JSON proposals: {raw_text!r}") from exc
 
-    # Handle the thin-data case where Claude returns an object instead of array
-    if isinstance(result, dict):
-        return [result]  # Caller checks for tooThinData key
+    if not isinstance(result, list):
+        raise ValueError(f"Claude returned unexpected proposals shape: {raw_text!r}")
 
     return result
 

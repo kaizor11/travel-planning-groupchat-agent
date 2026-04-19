@@ -6,7 +6,7 @@ import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { getProfile, updateProfile, updateCalendarToken } from '../api/client'
 
-const PREFERENCE_TAGS = ['beach', 'hiking', 'city', 'adventure', 'culture', 'food', 'relaxation', 'nightlife', 'nature', 'ski']
+const PREFERENCE_TAGS = ['beach', 'hiking', 'city', 'adventure', 'culture', 'food', 'relaxation', 'nightlife', 'nature']
 
 interface ProfileDrawerProps {
   user: User | null
@@ -19,8 +19,6 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
   const [budgetMax, setBudgetMax] = useState('')
   const [preferences, setPreferences] = useState<string[]>([])
   const [homeAirport, setHomeAirport] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
   const [calendarConnected, setCalendarConnected] = useState<boolean | null>(null)
   const [calendarConnecting, setCalendarConnecting] = useState(false)
   const [calendarError, setCalendarError] = useState<string | null>(null)
@@ -98,8 +96,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
     )
   }
 
-  const handleSave = async () => {
-    setSaving(true)
+  const handleClose = async () => {
     try {
       await updateProfile({
         budgetMin: budgetMin ? parseInt(budgetMin, 10) : undefined,
@@ -107,20 +104,17 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
         preferences,
         homeAirport: homeAirport.trim() || undefined,
       }, idToken)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
     } catch {
-      // ignore — user can retry
-    } finally {
-      setSaving(false)
+      // ignore — close regardless
     }
+    onClose()
   }
 
   return (
     <>
       {/* Backdrop */}
       <div
-        onClick={onClose}
+        onClick={handleClose}
         style={{
           position: 'fixed', inset: 0,
           background: 'rgba(0,0,0,0.3)',
@@ -174,7 +168,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
               <p style={{ fontSize: '12px', color: '#8E8E93', margin: 0 }}>{user?.email}</p>
             </div>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               style={{
                 marginLeft: 'auto', background: 'none', border: 'none',
                 fontSize: '22px', color: '#8E8E93', cursor: 'pointer', lineHeight: 1,
@@ -267,7 +261,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
               Budget
             </p>
             <p style={{ fontSize: '12px', color: '#8E8E93', margin: '0 0 12px' }}>
-              🔒 Private — only you see this
+              Private — only you see this
             </p>
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
               <div style={{ flex: 1 }}>
@@ -317,7 +311,7 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
               Home Airport
             </p>
             <p style={{ fontSize: '12px', color: '#8E8E93', margin: '0 0 12px' }}>
-              Used for real flight price estimates in trip proposals
+              Used for real flight price estimates
             </p>
             <input
               type="text"
@@ -368,24 +362,6 @@ export default function ProfileDrawer({ user, idToken, onClose }: ProfileDrawerP
           </div>
         </div>
 
-        {/* Save button */}
-        <div style={{ padding: '16px', background: '#fff', borderTop: '1px solid rgba(0,0,0,0.08)' }}>
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            style={{
-              width: '100%', padding: '14px',
-              borderRadius: '12px', border: 'none',
-              background: saved ? '#34C759' : 'linear-gradient(135deg,#5856D6,#007AFF)',
-              color: '#fff', fontSize: '16px', fontWeight: '600',
-              cursor: saving ? 'default' : 'pointer',
-              opacity: saving ? 0.7 : 1,
-              transition: 'background 0.2s',
-            }}
-          >
-            {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
       </div>
     </>
   )

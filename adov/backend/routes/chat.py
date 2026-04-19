@@ -9,16 +9,17 @@ from fastapi import APIRouter, Depends, Path
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
+from services.activity_log import log_event
 from services.auth import get_current_user
 from services.firebase import (
     add_message,
     add_trip_member,
-    add_wish_pool_entry,
     get_messages,
     get_trip,
     get_user,
     reset_trip,
     stream_messages,
+    upsert_wish_pool_entry,
 )
 
 router = APIRouter()
@@ -30,7 +31,9 @@ MENTION_REGEX = re.compile(r"@adov\b", re.IGNORECASE)
 PROPOSAL_TRIGGER_REGEX = re.compile(
     r"\b(trip (ideas?|proposals?|suggestions?)|where should we (go|travel)|"
     r"give us (some |trip )?ideas?|what (trips?|places?|destinations?) should we|"
-    r"suggest (some |a )?trip(s)?|plan (our )?trip|generate (some )?proposals?)\b",
+    r"suggest (some |a )?trip(s)?|plan (our )?trip|generate (some )?proposals?|"
+    r"generate (the |a )?(trip |proposals? )?(anyway|now|regardless)|"
+    r"just (generate|plan) (the |a )?trip)\b",
     re.IGNORECASE,
 )
 PREFERENCE_SIGNAL_REGEX = re.compile(
@@ -168,16 +171,16 @@ async def wishpool_action(
 ):
     uid = current_user["uid"]
     if body.action == "add":
-        entry = {
-            "submittedBy": uid,
-            "destination": body.destination,
-            "tags": body.tags,
-        }
-        if body.estimated_cost:
-            entry["estimatedCost"] = body.estimated_cost
-        if body.source_url:
-            entry["sourceUrl"] = body.source_url
-        entry_id = add_wish_pool_entry(trip_id, entry)
+        entry_id = upsert_wish_pool_entry(
+            trip_id,
+            uid,
+            body.destination,
+            body.tags,
+            body.estimated_cost,
+            body.source_url,
+        )
+        log_event("wishpool_added", trip_id=trip_id, user_id=uid,
+                  destination=body.destination, tags=body.tags)
         return {"ok": True, "id": entry_id}
 
     return {"ok": True, "skipped": True}

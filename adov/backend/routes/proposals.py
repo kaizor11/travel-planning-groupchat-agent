@@ -2,11 +2,13 @@
 import asyncio
 import logging
 import urllib.parse
+from collections import defaultdict
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel
 
+from services.activity_log import log_event
 from services.auth import get_current_user
 from services.firebase import (
     add_message,
@@ -28,6 +30,66 @@ TRIP_ID_PATTERN = r"^[a-zA-Z0-9_-]{1,64}$"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _get_accepted_by(entry: dict) -> list[str]:
+    """Normalize acceptedBy across old submittedBy schema and new acceptedBy schema."""
+    accepted = entry.get("acceptedBy")
+    if accepted:
+        return accepted
+    legacy = entry.get("submittedBy")
+    return [legacy] if legacy else []
+
+
+def _aggregate_destinations(wish_pool: list[dict], member_count: int) -> list[dict]:
+    """
+    Group wishpool entries by destination, count unique acceptors and total votes.
+    Filter to destinations accepted by strict majority (> 50%) of members.
+    Returns list of {destination, entries, total_votes} sorted by total_votes desc, max 5.
+    """
+    dest_map: dict[str, dict] = defaultdict(
+        lambda: {"entries": [], "unique_acceptors": set(), "total_votes": 0, "display_name": ""}
+    )
+    for entry in wish_pool:
+        dest = entry.get("destination", "").strip()
+        if not dest:
+            continue
+        accepted = _get_accepted_by(entry)
+        key = dest.lower()
+        dest_map[key]["entries"].append(entry)
+        dest_map[key]["unique_acceptors"].update(accepted)
+        dest_map[key]["total_votes"] += len(accepted)
+        if not dest_map[key]["display_name"]:
+            dest_map[key]["display_name"] = dest
+
+    threshold = member_count / 2  # strict majority: unique_acceptors count must be > threshold
+    qualified = [
+        {
+            "destination": data["display_name"],
+            "entries": data["entries"],
+            "total_votes": data["total_votes"],
+        }
+        for data in dest_map.values()
+        if len(data["unique_acceptors"]) > threshold
+    ]
+    qualified.sort(key=lambda x: x["total_votes"], reverse=True)
+    return qualified[:5]
+
+
+def _check_proposal_readiness(trip_id: str, member_ids: list[str]) -> dict:
+    """Returns {missing_budget: [names], missing_calendar: [names]}."""
+    missing_budget: list[str] = []
+    missing_calendar: list[str] = []
+    for uid in member_ids:
+        user = get_user(uid)
+        if not user:
+            continue
+        name = user.get("name") or uid
+        if user.get("budgetMin") is None or user.get("budgetMax") is None:
+            missing_budget.append(name)
+        if not user.get("googleCalendarToken"):
+            missing_calendar.append(name)
+    return {"missing_budget": missing_budget, "missing_calendar": missing_calendar}
+
 
 def _get_group_budget(trip_id: str) -> dict:
     """Compute group budget overlap across all members with budgets set."""
@@ -110,12 +172,13 @@ def _pick_outbound_date(windows: list[dict]) -> str:
 
 # ── Shared proposal generation core (used by REST endpoint and @adov trigger) ──
 
-async def _run_proposal_generation(trip_id: str) -> dict:
+async def _run_proposal_generation(trip_id: str, force: bool = False) -> dict:
     """
-    Full proposal generation flow: wish pool check → budget → flights → Claude → write.
+    Full proposal generation flow: wish pool aggregation → readiness check → budget → flights → Claude → write.
     Returns {"ok": True, "proposals": [...]} or {"ok": False, "reason": "..."}.
     Writes proposals and a proposal-type chat message to Firestore.
     Raises HTTPException on unrecoverable errors.
+    force=True skips the budget/calendar readiness check.
     """
     loop = asyncio.get_running_loop()
 
@@ -129,30 +192,60 @@ async def _run_proposal_generation(trip_id: str) -> dict:
         wish_pool_future, trip_future, budget_future, member_ids_future
     )
 
-    # Check wish pool has enough data
-    if len(wish_pool) < 3:
+    member_count = len(member_ids)
+
+    # Aggregate wishpool entries by destination and filter to strict-majority-accepted ones
+    aggregated = _aggregate_destinations(wish_pool, member_count)
+    if not aggregated:
         add_message(
             trip_id,
             {
                 "senderId": "ai",
                 "text": (
-                    f"The wish pool only has {len(wish_pool)} confirmed "
-                    "destination(s) — I need at least 3 to generate good proposals. "
-                    "Share some travel links or tell me where you'd like to go!"
+                    "No destinations have enough votes yet. "
+                    "Share travel links and have the group click Add to build up the wish pool."
                 ),
                 "type": "ai",
             },
         )
-        return {"ok": False, "reason": "too_few_wish_pool_entries", "count": len(wish_pool)}
+        return {"ok": False, "reason": "no_qualified_destinations"}
+
+    # Pre-flight readiness check: warn about missing budget / calendar (skipped when force=True)
+    if not force:
+        readiness = await loop.run_in_executor(
+            None, lambda: _check_proposal_readiness(trip_id, member_ids)
+        )
+        parts: list[str] = []
+        if readiness["missing_budget"]:
+            names = ", ".join(readiness["missing_budget"])
+            parts.append(f"{names} haven't set a budget yet (tap Profile → Budget)")
+        if readiness["missing_calendar"]:
+            names = ", ".join(readiness["missing_calendar"])
+            parts.append(
+                f"{names} haven't connected their calendar "
+                f"(tap Profile → Google Calendar → Connect)"
+            )
+        if parts:
+            add_message(
+                trip_id,
+                {
+                    "senderId": "ai",
+                    "text": (
+                        "Before I generate proposals: " + " and ".join(parts) + ".\n"
+                        'To generate with the info I have now, say "@adov generate anyway".'
+                    ),
+                    "type": "ai",
+                },
+            )
+            return {"ok": False, "reason": "missing_data", "details": readiness}
 
     windows: list[dict] = (trip or {}).get("availableWindows", [])
-    member_count = len(member_ids)
 
     # Pick nearest future window start date; fall back to 60 days from now
     outbound_date = _pick_outbound_date(windows)
 
     # Fetch real flight prices from SerpAPI if members have home airports set
-    destinations_to_check = [entry.get("destination", "") for entry in wish_pool if entry.get("destination")]
+    destinations_to_check = [d["destination"] for d in aggregated]
     try:
         flight_estimates = await loop.run_in_executor(
             None,
@@ -162,12 +255,12 @@ async def _run_proposal_generation(trip_id: str) -> dict:
         logger.warning(f"[proposals] flight estimate error (non-fatal): {exc}")
         flight_estimates = {}
 
-    # Call Claude to generate proposals
+    # Call Claude to generate one proposal per aggregated destination
     try:
         proposals_raw = await loop.run_in_executor(
             None,
             lambda: generate_trip_proposals(
-                wish_pool=wish_pool,
+                aggregated_destinations=aggregated,
                 windows=windows,
                 budget=budget,
                 member_count=member_count,
@@ -177,12 +270,6 @@ async def _run_proposal_generation(trip_id: str) -> dict:
     except Exception as exc:
         logger.error(f"[proposals] Claude error: {exc}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to generate proposals")
-
-    # Handle thin-data signal from Claude
-    if proposals_raw and isinstance(proposals_raw[0], dict) and proposals_raw[0].get("tooThinData"):
-        msg_text = proposals_raw[0].get("message", "Not enough data to generate proposals yet.")
-        add_message(trip_id, {"senderId": "ai", "text": msg_text, "type": "ai"})
-        return {"ok": False, "reason": "too_thin_data"}
 
     # Persist each proposal and build the chat message payload
     proposals_data: list[dict] = []
@@ -217,6 +304,8 @@ async def _run_proposal_generation(trip_id: str) -> dict:
             "proposalsData": proposals_data,
         },
     )
+    log_event("proposals_generated", trip_id=trip_id, count=len(proposals_data),
+              destinations=[p["destination"] for p in proposals_data])
 
     return {"ok": True, "proposals": proposals_data}
 

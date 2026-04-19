@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+from services.activity_log import log_event
 from services.anthropic_client import extract_preference, get_chat_response, parse_travel_content
 from services.firebase import (
     add_message,
@@ -28,7 +29,7 @@ router = APIRouter()
 URL_REGEX = re.compile(r"https?://[^\s]+")
 
 SOCIAL_MEDIA_REGEX = re.compile(
-    r"instagram|tiktok|youtube|youtu\.be|twitter|x\.com", re.IGNORECASE
+    r"tiktok|youtube|youtu\.be|twitter|x\.com", re.IGNORECASE
 )
 
 INSTAGRAM_REEL_REGEX = re.compile(r"instagram\.com/reel")
@@ -45,6 +46,11 @@ class ParseRequest(BaseModel):
 
 _AVAILABILITY_RE = re.compile(
     r"\b(free|available|availability|calendar|schedule|when (can|are|is)|open)\b",
+    re.IGNORECASE,
+)
+
+_FORCE_TRIGGER_RE = re.compile(
+    r"\b(anyway|just go|just generate|go ahead|proceed|skip|ignore)\b",
     re.IGNORECASE,
 )
 
@@ -207,6 +213,7 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
         )
         if reply:
             add_message(trip_id, {"senderId": "ai", "text": reply, "type": "ai"})
+            log_event("ai_reply", trip_id=trip_id, preview=reply[:80])
     except Exception as exc:
         logger.error(f"[handle_mention] error: {exc}", exc_info=True)
 
@@ -214,16 +221,23 @@ async def handle_mention(trip_id: str, sender_name: str, trigger_text: str = "")
 async def handle_proposal_request(trip_id: str, sender_name: str, trigger_text: str = "") -> None:
     """
     Trigger the proposal generation flow when @adov is mentioned with a trip-planning phrase.
-    Delegates to the shared _run_proposal_generation helper in routes.proposals.
-    Falls back to a regular handle_mention if generation fails or wish pool is too thin.
+    Passes force=True when the trigger contains override keywords (e.g. "anyway", "go ahead").
+    Writes a hardcoded error message on failure instead of falling back to a conversational reply.
     """
+    force = bool(_FORCE_TRIGGER_RE.search(trigger_text))
     try:
         from routes.proposals import _run_proposal_generation
-        await _run_proposal_generation(trip_id)
+        await _run_proposal_generation(trip_id, force=force)
     except Exception as exc:
         logger.error(f"[handle_proposal_request] error: {exc}", exc_info=True)
-        # Graceful fallback: treat as regular @adov mention
-        await handle_mention(trip_id, sender_name, trigger_text=trigger_text)
+        add_message(
+            trip_id,
+            {
+                "senderId": "ai",
+                "text": "Something went wrong while generating proposals. Try again in a moment.",
+                "type": "ai",
+            },
+        )
 
 
 async def handle_preference(trip_id: str, sender_id: str, text: str) -> None:
@@ -235,6 +249,8 @@ async def handle_preference(trip_id: str, sender_id: str, text: str) -> None:
             await loop.run_in_executor(
                 None, lambda: upsert_user_preference(trip_id, sender_id, pref)
             )
+            log_event("preference_extracted", trip_id=trip_id, user_id=sender_id,
+                      type=pref.get("type"), item=pref.get("item"), sentiment=pref.get("sentiment"))
     except Exception as exc:
         logger.error(f"[handle_preference] error: {exc}", exc_info=True)
 
@@ -300,6 +316,8 @@ async def parse_content(body: ParseRequest):
         destination = parsed.get("destination", "")  # type: ignore[union-attr]
         tags = parsed.get("tags", [])  # type: ignore[union-attr]
         estimated_cost = parsed.get("estimatedCost")  # type: ignore[union-attr]
+        log_event("travel_content_parsed", trip_id=body.trip_id, destination=destination,
+                  confidence=round(parsed.get("confidence", 0), 2))
         tag_str = ", ".join(tags)
         cost_str = f", {estimated_cost}" if estimated_cost else ""
         ai_text = (

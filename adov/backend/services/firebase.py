@@ -143,6 +143,42 @@ def add_wish_pool_entry(trip_id: str, entry: dict) -> str:
     return ref.id
 
 
+def upsert_wish_pool_entry(
+    trip_id: str,
+    uid: str,
+    destination: str,
+    tags: list,
+    estimated_cost: str | None,
+    source_url: str | None,
+) -> str:
+    """
+    If an entry with the same sourceUrl already exists, add uid to acceptedBy (idempotent).
+    Otherwise create a new entry with acceptedBy: [uid].
+    Different links to the same city are kept as separate entries;
+    destination aggregation happens at proposal-generation time.
+    """
+    db = get_db()
+    col = db.collection("trips").document(trip_id).collection("wishPool")
+
+    if source_url:
+        docs = list(col.where("sourceUrl", "==", source_url).limit(1).stream())
+        if docs:
+            docs[0].reference.update({"acceptedBy": firestore.ArrayUnion([uid])})
+            return docs[0].id
+
+    ref = col.document()
+    payload = _omit_none({
+        "destination": destination,
+        "tags": tags,
+        "estimatedCost": estimated_cost,
+        "sourceUrl": source_url,
+        "acceptedBy": [uid],
+        "confirmedAt": firestore.SERVER_TIMESTAMP,
+    })
+    ref.set(payload)
+    return ref.id
+
+
 # ── User helpers ─────────────────────────────────────────────────────────────
 
 def upsert_user(uid: str, name: str, email: str, avatar_url: str) -> None:
