@@ -165,15 +165,20 @@ anthropic_client.parse_travel_content(url, text)  ← calls Claude
 
 ### Wish pool confirmation
 
-When the user clicks "Add":
+When a user clicks "Add":
 ```
-POST /api/trips/{tripId}/wishpool  {action: "add", destination: "...", tags: [...]}
+POST /api/trips/{tripId}/wishpool  {action: "add", destination: "...", tags: [...], source_url: "..."}
    ↓
-firebase.add_wish_pool_entry(trip_id, {...})
-   Writes to /trips/{tripId}/wishPool/{entryId}
+firebase.upsert_wish_pool_entry(trip_id, uid, destination, tags, estimated_cost, source_url)
+   If an entry with the same sourceUrl already exists:
+       → updates acceptedBy: ArrayUnion([uid])   (idempotent)
+   Else:
+       → creates new doc with acceptedBy: [uid]
 ```
 
 When the user clicks "Skip": same endpoint with `action: "skip"` — no Firestore write.
+
+**Deduplication:** the same link clicked by multiple users results in ONE Firestore document, with each user's UID added to `acceptedBy`. Different links pointing to the same city remain as separate entries; vote aggregation happens later at proposal-generation time.
 
 **The wish pool** is a collection of travel destinations the group has confirmed interest in. It's the raw material for proposal generation.
 
@@ -313,59 +318,73 @@ The `GET /api/trips/{tripId}/budget` endpoint returns only `{group_min, group_ma
 
 **Files:** `adov/backend/routes/ai.py` (`handle_proposal_request`), `adov/backend/routes/proposals.py`, `adov/backend/services/anthropic_client.py` (`generate_trip_proposals`), `adov/backend/services/flights_service.py`, `adov/backend/prompts/agent.py` (`PROPOSAL_GENERATION_PROMPT`)
 
-### Prerequisites check
+### Prerequisites and gate logic
 
-Before generating proposals:
-- Wish pool must have ≥ 3 confirmed entries (otherwise AI replies conversationally asking for more)
-- If triggered via explicit endpoint `POST /api/trips/{tripId}/proposals/generate`, same check applies
+`_run_proposal_generation(trip_id, force=False)` runs three sequential gates before calling Claude:
+
+**Gate 1 — Destination aggregation (always runs):**
+- Groups all wishpool entries by normalized destination name
+- Counts unique acceptors (UIDs across all entries for that destination) and total votes
+- Filters to destinations where unique acceptors **> 50% of member count** (strict majority)
+- Sorts by total vote count descending; caps at 5
+- If no destinations qualify → writes a hardcoded nudge message, returns early
+
+**Gate 2 — Readiness check (skipped when `force=True`):**
+- Checks each member's Firestore user doc for `budgetMin`/`budgetMax` and `googleCalendarToken`
+- If any member is missing budget or calendar → writes a hardcoded message naming who needs to act, tells group to say `@adov generate anyway` to proceed, returns early
+
+**Force override:** when the trigger text contains `anyway`, `just go`, `go ahead`, `proceed`, `skip`, or `ignore`, `force=True` is set and Gate 2 is skipped. Claude generates with null budget (unconstrained) and empty windows (60-90 day fallback dates).
 
 ### Full generation flow
 
-Both the `@adov` trigger path and the `POST /api/trips/{tripId}/proposals/generate` endpoint share a single implementation via `_run_proposal_generation(trip_id)` in `routes/proposals.py`.
+Both the `@adov` trigger path and the `POST /api/trips/{tripId}/proposals/generate` endpoint share a single implementation via `_run_proposal_generation(trip_id, force)` in `routes/proposals.py`.
 
 ```
-_run_proposal_generation(trip_id)
+_run_proposal_generation(trip_id, force=False)
    ↓
-1. Fetch wish pool entries (destinations + tags) — need ≥ 3
-2. Fetch all member budgets → compute group_min / group_max
-3. Fetch each member's homeAirport from their profile
-4. Fetch stored availableWindows from trip document
+1. Fetch wish pool + trip doc + budgets + member IDs (concurrent)
 
-5. Pick outbound date:
-   - Use first window whose start date is ≥ today
-   - Fall back to datetime.now() + 60 days if no future windows exist
-   (prevents stale/past dates from causing SerpAPI to return no results)
+2. _aggregate_destinations(wish_pool, member_count)
+   → Groups entries by destination, counts unique acceptors + total votes
+   → Filters to strict-majority destinations, sorts by votes, caps at 5
+   → If empty: write nudge message, return early
 
-6. For each unique destination in the wish pool:
+3. If not force: _check_proposal_readiness(trip_id, member_ids)
+   → For each member: check budgetMin/Max and googleCalendarToken
+   → If any missing: write message listing who needs to act, return early
+
+4. _pick_outbound_date(windows) → first future window start, or now+60d fallback
+
+5. For each destination in aggregated list:
    For each member's home airport:
        flights_service.get_cheapest_flight(origin, destination, date)
-           → Calls SerpAPI Google Flights
-           → Returns cheapest price in USD (or None)
    flight_estimates[destination] = min price across all origins
 
-7. anthropic_client.generate_trip_proposals(
-       wish_pool, windows, budget, member_count, flight_estimates
+6. anthropic_client.generate_trip_proposals(
+       aggregated_destinations, windows, budget, member_count, flight_estimates
    )
-   → Claude returns JSON array of 2-3 proposals:
+   → Claude returns JSON array with ONE proposal per destination:
    [
      {
        "destination": "Lisbon, Portugal",
        "suggestedDates": {"start": "2026-06-10", "end": "2026-06-17"},
        "estimatedCostPerPerson": 1200,
        "flightEstimate": 650,
-       "rationale": "Mentioned by 3 members; matches beach + culture tags",
+       "rationale": "Saved by both members; matches beach + culture tags",
        "tradeoff": "Long flight from US West Coast"
      },
-     ...
+     ...  // one element per aggregated destination
    ]
 
-8. For each proposal:
+7. For each proposal:
    - Add bookingSearchUrl (pre-filled Google Flights link)
    - Write to /trips/{tripId}/proposals/{proposalId} in Firestore
 
-9. Write a "proposal" type message to Firestore chat
+8. Write a "proposal" type message to Firestore chat
    (message contains embedded proposalsData array)
 ```
+
+**Error handling:** if `_run_proposal_generation` raises an exception, `handle_proposal_request` writes a hardcoded error message. It no longer falls back to `handle_mention` (which previously caused Claude to generate "Should I lock those in?" confirmation questions).
 
 ---
 
@@ -421,10 +440,10 @@ The frontend updates the proposal card optimistically (shows new vote immediatel
     proposalsData: [...]  (optional — set on proposal messages)
 
 /trips/{tripId}/wishPool/{entryId}
-    submittedBy (userId)
+    acceptedBy: [userId, ...]   (upserted per-user; replaces old submittedBy field)
     destination, tags
     estimatedCost         ("budget" | "mid-range" | "luxury")
-    sourceUrl
+    sourceUrl             (dedup key — same URL → same doc, new uid added to acceptedBy)
     confirmedAt
 
 /trips/{tripId}/proposals/{proposalId}
@@ -501,16 +520,19 @@ Frontend secrets are prefixed with `VITE_` and are safe to expose to the browser
    → Backend writes wishpool_confirm message to Firestore
    → SSE stream pushes it to all connected browsers
    → User A sees: "Bali, Indonesia — Add to Wish Pool? [Add] [Skip]"
-4. User A clicks "Add" → POST /api/trips/.../wishpool → Bali saved to wish pool
-5. Repeat with 2 more destinations (Paris, Tokyo)
-6. User B types "@adov where should we go?"
+4. User A clicks "Add" → POST /api/trips/.../wishpool
+   → upsert_wish_pool_entry: creates doc with acceptedBy: [userA]
+5. User B clicks "Add" on the same card
+   → upsert_wish_pool_entry: finds existing doc by sourceUrl, updates acceptedBy: [userA, userB]
+6. Repeat with more destinations (Paris, Tokyo) — each accepted by both users
+7. User B types "@adov where should we go?"
    → Backend detects proposal trigger regex
-   → handle_proposal_request() fires:
-       - Fetches wish pool (Bali, Paris, Tokyo)
-       - Fetches budgets → group range $800–$1500
-       - Fetches home airports (LAX, JFK)
-       - Calls SerpAPI for flight prices from LAX→Bali, JFK→Bali, LAX→Paris, etc.
-       - Calls Claude → generates 2 proposals
+   → handle_proposal_request() fires (force=False):
+       - Fetches wish pool and member list
+       - _aggregate_destinations: Bali (2 unique acceptors > 50%), Paris (2), Tokyo (2) → all qualify
+       - _check_proposal_readiness: both users have budget + calendar → passes
+       - Fetches home airports (LAX, JFK), calls SerpAPI for flight prices
+       - Calls Claude → generates 3 proposals (one per destination)
        - Writes proposals to Firestore
        - Writes "proposal" message to chat
    → SSE pushes proposal cards to all browsers
