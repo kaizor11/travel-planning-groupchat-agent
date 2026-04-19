@@ -323,7 +323,8 @@ The `GET /api/trips/{tripId}/budget` endpoint returns only `{group_min, group_ma
 `_run_proposal_generation(trip_id, force=False)` runs three sequential gates before calling Claude:
 
 **Gate 1 — Destination aggregation (always runs):**
-- Groups all wishpool entries by normalized destination name
+- Each destination string is normalized via `_normalize_destination`, which resolves common aliases using a hardcoded `_CITY_ALIASES` lookup (e.g. "NYC" → "New York City, NY", "Bali" → "Bali, Indonesia") so different shorthand for the same city merges correctly
+- Groups all wishpool entries by normalized destination key
 - Counts unique acceptors (UIDs across all entries for that destination) and total votes
 - Filters to destinations where unique acceptors **> 50% of member count** (strict majority)
 - Sorts by total vote count descending; caps at 5
@@ -382,6 +383,9 @@ _run_proposal_generation(trip_id, force=False)
 
 8. Write a "proposal" type message to Firestore chat
    (message contains embedded proposalsData array)
+
+9. log_event("proposals_generated", trip_id, count, destinations)
+   (writes to services/activity_log for analytics/debugging)
 ```
 
 **Error handling:** if `_run_proposal_generation` raises an exception, `handle_proposal_request` writes a hardcoded error message. It no longer falls back to `handle_mention` (which previously caused Claude to generate "Should I lock those in?" confirmation questions).
@@ -401,10 +405,15 @@ POST /api/trips/{tripId}/proposals/{proposalId}/vote  {vote: "yes"}
 1. Verify Firebase ID token → get uid
 2. Write vote to Firestore: /trips/{tripId}/proposals/{proposalId}.votes[uid] = "yes"
 3. Fetch all proposals and count votes
-4. Generate progress message text:
-   - If not all voted: "2 of 4 voted — waiting on Sarah, Mike"
-   - If all voted: "All voted! Tokyo wins with 3 yes votes. 🎉"
-5. Write "vote" type AI message to Firestore chat
+4. Write per-proposal progress message to chat:
+   - If not all voted: "2 of 4 members have voted on **Tokyo** — waiting on 2 more."
+   - If all voted on this proposal: announce this proposal's result (win/tie/tally)
+5. Cross-proposal winner check (when multiple proposals exist):
+   - If every proposal has been fully voted on by all members:
+     → _declare_winning_destination() compares yes-vote counts across all proposals
+     → Writes a single winner announcement: "All votes are in! **Tokyo** wins with 3 yes votes."
+     → Handles tie: "It's a tie between **Tokyo** and **Bali** with 2 yes votes each."
+     → Handles all-no case: "No destination received a yes vote — want to regenerate?"
 6. Return {votes, tally} to frontend
 ```
 
