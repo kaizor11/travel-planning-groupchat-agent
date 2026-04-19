@@ -39,8 +39,6 @@ pip install -r requirements.txt
 | `anthropic` | >=0.40.0 | Claude API client |
 | `python-dotenv` | >=1.0.0 | Load `.env` secrets |
 | `python-multipart` | >=0.0.12 | Form data parsing |
-| `sse-starlette` | >=2.1.0 | Server-Sent Events support |
-
 ### 2. Environment variables
 
 Create `adov/backend/.env`:
