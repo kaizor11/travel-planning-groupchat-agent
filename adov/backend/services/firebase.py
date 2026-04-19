@@ -1,13 +1,17 @@
 # Firebase service: lazy Admin SDK initialization, Firestore CRUD helpers, and SSE-compatible message streaming.
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+import uuid
+from datetime import datetime, timezone
 from typing import AsyncGenerator
+from urllib.parse import quote
 
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, storage
 from google.cloud.firestore_v1.base_document import DocumentSnapshot
 
 logger = logging.getLogger(__name__)
@@ -35,9 +39,8 @@ def _get_app() -> firebase_admin.App:
     )
     try:
         _app = firebase_admin.initialize_app(cred)
-    except Exception as exc:
-        # Re-raise without chaining so credential values don't appear in tracebacks/logs
-        raise RuntimeError(f"Firebase init failed: {type(exc).__name__}") from None
+    except Exception:
+        raise RuntimeError("Firebase init failed") from None
     return _app
 
 
@@ -46,53 +49,45 @@ def get_db() -> firestore.Client:
     return firestore.client()
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
 def _doc_to_dict(doc: DocumentSnapshot) -> dict:
     data = doc.to_dict() or {}
     data["id"] = doc.id
-    # DatetimeWithNanoseconds (Firestore's timestamp type) is a datetime subclass —
-    # json.dumps can't serialize datetime, so convert everything to ISO strings here.
-    ts = data.get("timestamp")
-    if isinstance(ts, datetime):
-        data["timestamp"] = ts.isoformat()
-    elif ts is not None:
-        # Fallback: proto Timestamp has .seconds/.nanos directly
-        data["timestamp"] = datetime.fromtimestamp(
-            getattr(ts, "seconds", 0), tz=timezone.utc
-        ).isoformat()
+    for field_name in ("timestamp", "updatedAt"):
+        ts = data.get(field_name)
+        if isinstance(ts, datetime):
+            data[field_name] = ts.isoformat()
+        elif ts is not None:
+            data[field_name] = datetime.fromtimestamp(
+                getattr(ts, "seconds", 0), tz=timezone.utc
+            ).isoformat()
     return data
 
 
 def _omit_none(d: dict) -> dict:
-    """Remove keys whose value is None so Firestore doesn't reject them."""
+    """Remove keys whose value is None for merge-heavy writes."""
     return {k: v for k, v in d.items() if v is not None}
 
 
-# ── Read ──────────────────────────────────────────────────────────────────────
+def _messages_collection(trip_id: str):
+    return get_db().collection("trips").document(trip_id).collection("messages")
+
+
+def _storage_bucket_name() -> str:
+    bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET", "").strip()
+    if not bucket_name:
+        raise RuntimeError("FIREBASE_STORAGE_BUCKET is not configured")
+    return bucket_name
+
 
 def get_messages(trip_id: str) -> list[dict]:
-    db = get_db()
-    q = (
-        db.collection("trips")
-        .document(trip_id)
-        .collection("messages")
-        .order_by("timestamp")
-    )
-    msgs = [_doc_to_dict(doc) for doc in q.stream()]
-    # Filter out internal reset-signal messages — they're only consumed by the SSE stream.
+    docs = _messages_collection(trip_id).order_by("timestamp").stream()
+    msgs = [_doc_to_dict(doc) for doc in docs]
     return [m for m in msgs if m.get("type") != "reset"]
 
 
-# ── Write ─────────────────────────────────────────────────────────────────────
-
 def get_recent_messages(trip_id: str, limit: int = 10) -> list[dict]:
-    """Return the most recent `limit` messages, ordered oldest-first."""
-    db = get_db()
     docs = (
-        db.collection("trips")
-        .document(trip_id)
-        .collection("messages")
+        _messages_collection(trip_id)
         .order_by("timestamp", direction=firestore.Query.DESCENDING)
         .limit(limit)
         .stream()
@@ -103,22 +98,154 @@ def get_recent_messages(trip_id: str, limit: int = 10) -> list[dict]:
 
 
 def add_message(trip_id: str, msg: dict) -> str:
-    db = get_db()
-    ref = (
-        db.collection("trips")
-        .document(trip_id)
-        .collection("messages")
-        .document()
-    )
+    ref = _messages_collection(trip_id).document()
     payload = _omit_none({**msg, "timestamp": firestore.SERVER_TIMESTAMP})
     ref.set(payload)
     return ref.id
 
 
-def upsert_user_preference(trip_id: str, user_id: str, preference: dict) -> None:
-    """Append a preference item to /trips/{tripId}/preferences/{userId}."""
+def reserve_message_id(trip_id: str) -> str:
+    return _messages_collection(trip_id).document().id
+
+
+def create_message_with_id(trip_id: str, message_id: str, msg: dict) -> dict:
+    ref = _messages_collection(trip_id).document(message_id)
+    ref.set({**msg, "timestamp": firestore.SERVER_TIMESTAMP})
+    return _doc_to_dict(ref.get())
+
+
+def get_message(trip_id: str, message_id: str) -> dict | None:
+    doc = _messages_collection(trip_id).document(message_id).get()
+    if not doc.exists:
+        return None
+    return _doc_to_dict(doc)
+
+
+def upload_image_to_storage(image_path: str, payload: bytes, content_type: str) -> str:
+    _get_app()
+    bucket = storage.bucket(_storage_bucket_name())
+    blob = bucket.blob(image_path)
+    download_token = str(uuid.uuid4())
+    blob.metadata = {"firebaseStorageDownloadTokens": download_token}
+    blob.upload_from_string(payload, content_type=content_type)
+    blob.patch()
+    return (
+        f"https://firebasestorage.googleapis.com/v0/b/{bucket.name}/o/"
+        f"{quote(image_path, safe='')}?alt=media&token={download_token}"
+    )
+
+
+def delete_storage_object(image_path: str) -> None:
+    if not image_path:
+        return
+    try:
+        _get_app()
+        storage.bucket(_storage_bucket_name()).blob(image_path).delete()
+    except Exception:
+        logger.warning("[storage] failed to delete image path=%s", image_path)
+
+
+def finalize_image_message_success(
+    *,
+    trip_id: str,
+    message_id: str,
+    image_analysis: dict,
+    reply_text: str,
+) -> str | None:
     db = get_db()
-    db.collection("trips").document(trip_id).collection("preferences").document(
+    messages = db.collection("trips").document(trip_id).collection("messages")
+    message_ref = messages.document(message_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _finalize(transaction):
+        snapshot = message_ref.get(transaction=transaction)
+        if not snapshot.exists:
+            return None
+
+        data = snapshot.to_dict() or {}
+        if data.get("analysisStatus") == "completed":
+            return data.get("analysisReplyMessageId")
+        if data.get("analysisReplyMessageId"):
+            return data.get("analysisReplyMessageId")
+        if data.get("analysisStatus") != "pending":
+            return None
+
+        reply_ref = messages.document()
+        transaction.set(
+            reply_ref,
+            {
+                "senderId": "ai",
+                "text": reply_text,
+                "type": "ai",
+                "replyToMessageId": message_id,
+                "timestamp": firestore.SERVER_TIMESTAMP,
+            },
+        )
+        transaction.update(
+            message_ref,
+            {
+                "analysisStatus": "completed",
+                "imageAnalysis": image_analysis,
+                "analysisReplyMessageId": reply_ref.id,
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            },
+        )
+        return reply_ref.id
+
+    return _finalize(transaction)
+
+
+def finalize_image_message_failure(
+    *,
+    trip_id: str,
+    message_id: str,
+    image_analysis: dict | None,
+) -> bool:
+    db = get_db()
+    messages = db.collection("trips").document(trip_id).collection("messages")
+    message_ref = messages.document(message_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _finalize(transaction):
+        snapshot = message_ref.get(transaction=transaction)
+        if not snapshot.exists:
+            return False
+
+        data = snapshot.to_dict() or {}
+        if data.get("analysisStatus") != "pending":
+            return False
+
+        patch = {
+            "analysisStatus": "failed",
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        }
+        if image_analysis is not None:
+            patch["imageAnalysis"] = image_analysis
+        transaction.update(message_ref, patch)
+        return True
+
+    return bool(_finalize(transaction))
+
+
+def delete_message_cascade(trip_id: str, message_id: str) -> None:
+    message = get_message(trip_id, message_id)
+    if not message:
+        return
+
+    if message.get("imagePath"):
+        delete_storage_object(message["imagePath"])
+
+    reply_id = message.get("analysisReplyMessageId")
+    if reply_id:
+        _messages_collection(trip_id).document(reply_id).delete()
+
+    _messages_collection(trip_id).document(message_id).delete()
+
+
+def upsert_user_preference(trip_id: str, user_id: str, preference: dict) -> None:
+    get_db().collection("trips").document(trip_id).collection("preferences").document(
         user_id
     ).set(
         {
@@ -132,12 +259,7 @@ def upsert_user_preference(trip_id: str, user_id: str, preference: dict) -> None
 
 def add_wish_pool_entry(trip_id: str, entry: dict) -> str:
     db = get_db()
-    ref = (
-        db.collection("trips")
-        .document(trip_id)
-        .collection("wishPool")
-        .document()
-    )
+    ref = db.collection("trips").document(trip_id).collection("wishPool").document()
     payload = _omit_none({**entry, "confirmedAt": firestore.SERVER_TIMESTAMP})
     ref.set(payload)
     return ref.id
@@ -151,12 +273,6 @@ def upsert_wish_pool_entry(
     estimated_cost: str | None,
     source_url: str | None,
 ) -> str:
-    """
-    If an entry with the same sourceUrl already exists, add uid to acceptedBy (idempotent).
-    Otherwise create a new entry with acceptedBy: [uid].
-    Different links to the same city are kept as separate entries;
-    destination aggregation happens at proposal-generation time.
-    """
     db = get_db()
     col = db.collection("trips").document(trip_id).collection("wishPool")
 
@@ -167,31 +283,27 @@ def upsert_wish_pool_entry(
             return docs[0].id
 
     ref = col.document()
-    payload = _omit_none({
-        "destination": destination,
-        "tags": tags,
-        "estimatedCost": estimated_cost,
-        "sourceUrl": source_url,
-        "acceptedBy": [uid],
-        "confirmedAt": firestore.SERVER_TIMESTAMP,
-    })
+    payload = _omit_none(
+        {
+            "destination": destination,
+            "tags": tags,
+            "estimatedCost": estimated_cost,
+            "sourceUrl": source_url,
+            "acceptedBy": [uid],
+            "confirmedAt": firestore.SERVER_TIMESTAMP,
+        }
+    )
     ref.set(payload)
     return ref.id
 
 
-# ── User helpers ─────────────────────────────────────────────────────────────
-
 def upsert_user(uid: str, name: str, email: str, avatar_url: str) -> None:
-    """Create or merge user record at /users/{uid}. Safe to call on every request."""
-    db = get_db()
     payload = _omit_none({"name": name, "email": email, "avatarUrl": avatar_url})
-    db.collection("users").document(uid).set(payload, merge=True)
+    get_db().collection("users").document(uid).set(payload, merge=True)
 
 
 def get_user(uid: str) -> dict | None:
-    """Return user doc from /users/{uid}, or None if not found."""
-    db = get_db()
-    doc = db.collection("users").document(uid).get()
+    doc = get_db().collection("users").document(uid).get()
     if not doc.exists:
         return None
     data = doc.to_dict() or {}
@@ -200,61 +312,54 @@ def get_user(uid: str) -> dict | None:
 
 
 def update_user(uid: str, fields: dict) -> None:
-    """Merge arbitrary fields into /users/{uid}. Never writes None values."""
-    db = get_db()
-    db.collection("users").document(uid).set(_omit_none(fields), merge=True)
+    get_db().collection("users").document(uid).set(_omit_none(fields), merge=True)
 
 
 def set_user_calendar_token(uid: str, access_token: str) -> None:
-    """Store Google OAuth access token for calendar queries. Never logged."""
-    db = get_db()
-    db.collection("users").document(uid).set(
+    get_db().collection("users").document(uid).set(
         {"googleCalendarToken": access_token}, merge=True
     )
 
 
 def clear_user_calendar_token(uid: str) -> None:
-    """Delete the stored calendar token so calendarConnected correctly shows False."""
-    db = get_db()
-    db.collection("users").document(uid).update(
+    get_db().collection("users").document(uid).update(
         {"googleCalendarToken": firestore.DELETE_FIELD}
     )
 
 
 def reset_trip(trip_id: str) -> None:
-    """Wipe all trip data and member calendar tokens. For demo reset only."""
     db = get_db()
-    # Capture member list before wiping memberIds
     member_ids = get_trip_members(trip_id)
+
+    message_docs = list(db.collection("trips").document(trip_id).collection("messages").stream())
+    for doc in message_docs:
+        image_path = (doc.to_dict() or {}).get("imagePath")
+        if image_path:
+            delete_storage_object(image_path)
+
     for subcol in ("messages", "preferences", "wishPool", "proposals"):
-        docs = list(
-            db.collection("trips").document(trip_id).collection(subcol).stream()
-        )
+        docs = list(db.collection("trips").document(trip_id).collection(subcol).stream())
         for doc in docs:
             doc.reference.delete()
-    # Clear transient trip fields and kick all members
+
     update_fields: dict = {"memberIds": []}
     try:
         update_fields["availableWindows"] = firestore.DELETE_FIELD
     except Exception:
         pass
     db.collection("trips").document(trip_id).set(update_fields, merge=True)
-    # Clear calendar tokens for everyone who was in the trip
+
     for uid in member_ids:
         try:
             clear_user_calendar_token(uid)
         except Exception:
             pass
-    # Write a reset-signal message so the SSE stream notifies all connected clients.
+
     add_message(trip_id, {"senderId": "system", "type": "reset", "text": ""})
 
 
-# ── Trip membership helpers ──────────────────────────────────────────────────
-
 def get_trip(trip_id: str) -> dict | None:
-    """Return trip doc from /trips/{tripId}, or None if not found."""
-    db = get_db()
-    doc = db.collection("trips").document(trip_id).get()
+    doc = get_db().collection("trips").document(trip_id).get()
     if not doc.exists:
         return None
     data = doc.to_dict() or {}
@@ -263,15 +368,12 @@ def get_trip(trip_id: str) -> dict | None:
 
 
 def add_trip_member(trip_id: str, user_id: str) -> None:
-    """Add user_id to /trips/{tripId}.memberIds (arrayUnion — idempotent)."""
-    db = get_db()
-    db.collection("trips").document(trip_id).set(
+    get_db().collection("trips").document(trip_id).set(
         {"memberIds": firestore.ArrayUnion([user_id])}, merge=True
     )
 
 
 def get_trip_members(trip_id: str) -> list[str]:
-    """Return memberIds array from /trips/{tripId}. Empty list if trip missing."""
     trip = get_trip(trip_id)
     if not trip:
         return []
@@ -279,35 +381,31 @@ def get_trip_members(trip_id: str) -> list[str]:
 
 
 def get_trip_member_status(trip_id: str) -> list[dict]:
-    """Return name + calendarConnected for each human member of a trip."""
     member_ids = get_trip_members(trip_id)
     result = []
     for uid in member_ids:
         user = get_user(uid)
         if not user:
             continue
-        result.append({
-            "name": user.get("name") or uid,
-            "calendarConnected": bool(user.get("googleCalendarToken")),
-        })
+        result.append(
+            {
+                "name": user.get("name") or uid,
+                "calendarConnected": bool(user.get("googleCalendarToken")),
+            }
+        )
     return result
 
 
 def store_trip_availability(trip_id: str, windows: list[dict]) -> None:
-    """Persist free/busy overlap windows onto the trip document."""
-    db = get_db()
-    db.collection("trips").document(trip_id).set(
+    get_db().collection("trips").document(trip_id).set(
         {"availableWindows": windows}, merge=True
     )
 
 
-# ── Wish pool read ────────────────────────────────────────────────────────────
-
 def get_wish_pool(trip_id: str) -> list[dict]:
-    """Return all confirmed wish pool entries for a trip, ordered by confirmedAt."""
-    db = get_db()
     docs = (
-        db.collection("trips")
+        get_db()
+        .collection("trips")
         .document(trip_id)
         .collection("wishPool")
         .order_by("confirmedAt")
@@ -321,13 +419,10 @@ def get_wish_pool(trip_id: str) -> list[dict]:
     return result
 
 
-# ── Proposals ─────────────────────────────────────────────────────────────────
-
 def add_proposal(trip_id: str, proposal: dict) -> str:
-    """Write a proposal dict to /trips/{tripId}/proposals/, return the doc ID."""
-    db = get_db()
     ref = (
-        db.collection("trips")
+        get_db()
+        .collection("trips")
         .document(trip_id)
         .collection("proposals")
         .document()
@@ -338,10 +433,9 @@ def add_proposal(trip_id: str, proposal: dict) -> str:
 
 
 def get_proposals(trip_id: str) -> list[dict]:
-    """Return all proposals for a trip, ordered by generatedAt."""
-    db = get_db()
     docs = (
-        db.collection("trips")
+        get_db()
+        .collection("trips")
         .document(trip_id)
         .collection("proposals")
         .order_by("generatedAt")
@@ -351,7 +445,6 @@ def get_proposals(trip_id: str) -> list[dict]:
     for doc in docs:
         data = doc.to_dict() or {}
         data["id"] = doc.id
-        # Convert generatedAt timestamp to ISO if present
         ts = data.get("generatedAt")
         if isinstance(ts, datetime):
             data["generatedAt"] = ts.isoformat()
@@ -360,85 +453,62 @@ def get_proposals(trip_id: str) -> list[dict]:
 
 
 def record_vote(trip_id: str, proposal_id: str, user_id: str, vote: str) -> None:
-    """Record a user's vote on a proposal using merge to avoid overwriting other votes."""
-    db = get_db()
-    db.collection("trips").document(trip_id).collection("proposals").document(
+    get_db().collection("trips").document(trip_id).collection("proposals").document(
         proposal_id
     ).set({"votes": {user_id: vote}}, merge=True)
 
 
-# ── SSE streaming ─────────────────────────────────────────────────────────────
-
 async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
     """
-    Polls Firestore every second for new messages and yields raw SSE-formatted strings.
-    Uses StreamingResponse (not sse_starlette) to avoid any library version issues.
-    Format: "data: <json>\\n\\n"
-
-    Read cost optimization: pre-populates seen_ids and captures the latest timestamp,
-    then polls only for messages AFTER that timestamp. An empty poll costs 1 read
-    instead of N (total message count), which prevents quota exhaustion during testing.
+    Poll Firestore every second and emit both new messages and updates to existing
+    messages. This keeps the chat UI in sync with screenshot analysis patches.
     """
-    logger.info(f"[SSE] stream_messages started for trip {trip_id}")
+    logger.info("[SSE] stream_messages started for trip %s", trip_id)
     try:
         db = get_db()
         loop = asyncio.get_running_loop()
-        seen_ids: set[str] = set()
-        last_ts = None  # raw Firestore timestamp for incremental filtering
+        fingerprints: dict[str, str] = {}
 
-        # Pre-populate seen_ids and capture the latest timestamp for incremental queries
         try:
             initial = await loop.run_in_executor(
                 None,
                 lambda: list(
-                    db.collection("trips").document(trip_id)
-                    .collection("messages").order_by("timestamp").stream()
+                    db.collection("trips")
+                    .document(trip_id)
+                    .collection("messages")
+                    .order_by("timestamp")
+                    .stream()
                 ),
             )
             for doc in initial:
-                seen_ids.add(doc.id)
-                raw_ts = (doc.to_dict() or {}).get("timestamp")
-                if raw_ts is not None:
-                    last_ts = raw_ts
-            logger.info(f"[SSE] pre-populated {len(seen_ids)} seen IDs, last_ts={last_ts}")
+                fingerprints[doc.id] = doc.update_time.isoformat() if doc.update_time else ""
+            logger.info("[SSE] pre-populated %s message fingerprints", len(fingerprints))
         except Exception as exc:
-            logger.warning(f"[SSE] initial fetch error: {exc}")
+            logger.warning("[SSE] initial fetch error: %s", exc)
 
-        # Poll every second — use a 1-second overlap (>= last_ts - 1s) to close the race
-        # window where a message arrives between last_ts capture and query execution.
-        # seen_ids deduplication ensures already-yielded messages are never re-sent.
         while True:
             await asyncio.sleep(1)
             try:
-                current_ts = last_ts  # capture for closure (avoids late-binding issue)
-
-                def fetch_new(ts=current_ts):
-                    q = db.collection("trips").document(trip_id).collection("messages")
-                    if ts is not None:
-                        # Overlap by 1 second to avoid missing messages in the race window
-                        q = q.where("timestamp", ">=", ts - timedelta(seconds=1)).order_by("timestamp")
-                    else:
-                        q = q.order_by("timestamp")
-                    return list(q.stream())
-
-                docs = await loop.run_in_executor(None, fetch_new)
+                docs = await loop.run_in_executor(
+                    None,
+                    lambda: list(
+                        db.collection("trips")
+                        .document(trip_id)
+                        .collection("messages")
+                        .order_by("timestamp")
+                        .stream()
+                    ),
+                )
                 for doc in docs:
-                    if doc.id not in seen_ids:
-                        seen_ids.add(doc.id)
-                        raw_ts = (doc.to_dict() or {}).get("timestamp")
-                        if raw_ts is not None:
-                            last_ts = raw_ts
-                        data = _doc_to_dict(doc)
-                        try:
-                            payload = json.dumps(data)
-                            logger.debug(f"[SSE] yielding message {doc.id}")
-                            yield f"data: {payload}\n\n"
-                        except (TypeError, ValueError) as exc:
-                            logger.warning(f"[SSE] serialization error (message skipped): {exc}")
+                    fingerprint = doc.update_time.isoformat() if doc.update_time else ""
+                    if fingerprints.get(doc.id) != fingerprint:
+                        fingerprints[doc.id] = fingerprint
+                        payload = json.dumps(_doc_to_dict(doc))
+                        yield f"data: {payload}\n\n"
             except Exception as exc:
-                logger.error(f"[SSE] poll error for trip={trip_id}: {exc}", exc_info=True)
+                logger.error("[SSE] poll error for trip=%s: %s", trip_id, exc, exc_info=True)
                 yield f"event: error\ndata: {json.dumps({'message': 'stream error'})}\n\n"
                 return
     except BaseException as exc:
-        logger.error(f"[SSE] generator crashed: {type(exc).__name__}: {exc}")
+        logger.error("[SSE] generator crashed: %s: %s", type(exc).__name__, exc)
         raise

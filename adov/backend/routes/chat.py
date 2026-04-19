@@ -5,7 +5,7 @@
 import re
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -20,6 +20,15 @@ from services.firebase import (
     reset_trip,
     stream_messages,
     upsert_wish_pool_entry,
+)
+from services.image_embedding.service import (
+    ImageMessagePersistenceError,
+    ImageProcessingDisabledError,
+    ImageStorageError,
+    ImageUploadValidationError,
+    create_pending_image_message,
+    get_feature_flags,
+    process_image_message,
 )
 
 router = APIRouter()
@@ -57,6 +66,7 @@ async def get_trip_messages(
         "messages": messages,
         "current_user_id": current_user["uid"],
         "current_user_name": current_user.get("name", ""),
+        "features": get_feature_flags(),
     }
 
 
@@ -135,6 +145,48 @@ async def send_message(
         await handle_preference(trip_id, uid, text)
 
     return {"ok": True, "id": msg_id}
+
+
+@router.post("/api/trips/{trip_id}/messages/image")
+async def send_image_message(
+    background_tasks: BackgroundTasks,
+    trip_id: str = Path(..., pattern=TRIP_ID_PATTERN),
+    file: UploadFile = File(...),
+    text: str = Form(""),
+    sender_name: str = Form(""),
+    current_user: dict = Depends(get_current_user),
+):
+    uid = current_user["uid"]
+    final_sender_name = sender_name or current_user.get("name", "")
+
+    try:
+        payload = await file.read()
+        created_message = create_pending_image_message(
+            trip_id=trip_id,
+            sender_id=uid,
+            sender_name=final_sender_name,
+            caption_text=text,
+            image_bytes=payload,
+            image_name=file.filename or "upload.png",
+            image_mime_type=file.content_type or "",
+        )
+    except ImageProcessingDisabledError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ImageUploadValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ImageStorageError, ImageMessagePersistenceError) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    background_tasks.add_task(
+        process_image_message,
+        trip_id=trip_id,
+        message_id=created_message["id"],
+        image_bytes=payload,
+        image_mime_type=file.content_type or "",
+    )
+    return created_message
 
 
 # ── Wish pool confirm / skip ───────────────────────────────────────────────────

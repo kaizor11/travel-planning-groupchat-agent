@@ -44,6 +44,10 @@ body {
   max-width: 280px;
   position: relative;
 }
+.im-bubble-media {
+  padding: 4px;
+  overflow: hidden;
+}
 .im-bubble-sent {
   background: #007AFF;
   color: #fff;
@@ -67,6 +71,37 @@ body {
 .im-bubble-ai ul, .im-bubble-ai ol { margin: 4px 0 6px 16px; padding: 0; }
 .im-bubble-ai li { margin-bottom: 2px; }
 .im-bubble-ai a { color: #cfe7ff; text-decoration: underline; }
+
+.im-media-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.im-message-image {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.12);
+  object-fit: cover;
+}
+.im-message-caption {
+  padding: 0 6px 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.im-message-status {
+  font-size: 11px;
+}
+.im-message-status.pending {
+  color: #8E8E93;
+}
+.im-message-status.completed {
+  color: #34C759;
+}
+.im-message-status.failed {
+  color: #FF3B30;
+}
 
 /* CSS tail triangles */
 .im-bubble-sent::after {

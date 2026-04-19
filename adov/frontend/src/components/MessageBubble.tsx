@@ -1,10 +1,11 @@
 // Renders a single chat message as a sent (blue), received (gray), or AI (purple) bubble.
 // Received messages show the sender's name above the bubble for multi-user attribution.
 // Timestamps are displayed below each bubble as relative time (e.g. "2m ago").
-import ReactMarkdown from 'react-markdown'
-import type { Message } from '../types/message'
+import type { CSSProperties } from 'react'
+import type { AnalysisStatus, Message } from '../types/message'
 import WishPoolCard from './WishPoolCard'
 import ProposalCard from './ProposalCard'
+import SimpleMarkdown from './SimpleMarkdown'
 
 interface MessageBubbleProps {
   message: Message
@@ -23,7 +24,6 @@ function getInitials(name: string | undefined, senderId: string): string {
   return senderId[0]?.toUpperCase() ?? '?'
 }
 
-/** Format an ISO timestamp as a human-readable relative time (no external dependencies). */
 function formatRelativeTime(ts: string | undefined): string | null {
   if (!ts) return null
   const date = new Date(ts)
@@ -38,15 +38,45 @@ function formatRelativeTime(ts: string | undefined): string | null {
   const diffDays = Math.floor(diffHours / 24)
   if (diffDays === 1) return 'Yesterday'
   if (diffDays < 7) return `${diffDays}d ago`
-  // Older than a week — show date
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
-const timestampStyle: React.CSSProperties = {
+function imageStatusLabel(status: AnalysisStatus | undefined): string | null {
+  if (status === 'pending') return 'Screenshot processing...'
+  if (status === 'completed') return 'Screenshot processed'
+  if (status === 'failed') return 'Screenshot analysis failed'
+  return null
+}
+
+const timestampStyle: CSSProperties = {
   fontSize: '10px',
   color: '#AEAEB2',
   marginTop: '2px',
   paddingLeft: '4px',
+}
+
+function renderImageContent(message: Message) {
+  if (!message.imageUrl) return message.text
+
+  return (
+    <div className="im-media-wrap">
+      <img src={message.imageUrl} alt={message.imageName || 'Uploaded screenshot'} className="im-message-image" />
+      {message.text && <div className="im-message-caption">{message.text}</div>}
+    </div>
+  )
+}
+
+function renderImageStatus(message: Message, isSent: boolean) {
+  const label = imageStatusLabel(message.analysisStatus)
+  if (!label || !message.imageUrl) return null
+  return (
+    <span
+      className={`im-message-status ${message.analysisStatus ?? ''}`}
+      style={{ ...timestampStyle, paddingLeft: isSent ? 0 : '4px', paddingRight: isSent ? '4px' : 0 }}
+    >
+      {label}
+    </span>
+  )
 }
 
 export default function MessageBubble({ message, currentUserId, tripId, idToken }: MessageBubbleProps) {
@@ -55,6 +85,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
   const initials = getInitials(message.senderName, message.senderId)
   const displayName = message.senderName || message.senderId
   const relativeTime = formatRelativeTime(message.timestamp)
+  const imageStatus = renderImageStatus(message, isSent)
 
   if (message.type === 'proposal' && message.proposalsData && message.proposalsData.length > 0) {
     return (
@@ -62,7 +93,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
         <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
         <div className="flex flex-col gap-2" style={{ maxWidth: '320px' }}>
           <div className="relative">
-            <div className="im-bubble im-bubble-ai"><ReactMarkdown>{message.text}</ReactMarkdown></div>
+            <div className="im-bubble im-bubble-ai"><SimpleMarkdown text={message.text} /></div>
             <div className="im-bubble-ai-clear" />
           </div>
           {message.proposalsData.map(proposal => (
@@ -86,7 +117,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
         <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
         <div className="flex flex-col gap-1.5">
           <div className="relative">
-            <div className="im-bubble im-bubble-ai"><ReactMarkdown>{message.text}</ReactMarkdown></div>
+            <div className="im-bubble im-bubble-ai"><SimpleMarkdown text={message.text} /></div>
             <div className="im-bubble-ai-clear" />
           </div>
           <WishPoolCard message={message} tripId={tripId} idToken={idToken} />
@@ -101,10 +132,13 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
       <div className="flex justify-end px-3 mb-0.5 im-bubble-wrap">
         <div className="flex flex-col items-end">
           <div className="relative">
-            <div className="im-bubble im-bubble-sent">{message.text}</div>
+            <div className={`im-bubble im-bubble-sent ${message.imageUrl ? 'im-bubble-media' : ''}`}>
+              {renderImageContent(message)}
+            </div>
             <div className="im-bubble-sent-clear" />
           </div>
           {relativeTime && <span style={{ ...timestampStyle, paddingRight: '4px', paddingLeft: 0 }}>{relativeTime}</span>}
+          {imageStatus}
         </div>
       </div>
     )
@@ -116,7 +150,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
         <div className="im-avatar im-avatar-ai flex-shrink-0" style={{ fontSize: '13px' }}>✈️</div>
         <div className="flex flex-col gap-0.5 max-w-[280px]">
           <div className="relative">
-            <div className="im-bubble im-bubble-ai"><ReactMarkdown>{message.text}</ReactMarkdown></div>
+            <div className="im-bubble im-bubble-ai"><SimpleMarkdown text={message.text} /></div>
             <div className="im-bubble-ai-clear" />
           </div>
           {relativeTime && <span style={timestampStyle}>{relativeTime}</span>}
@@ -125,7 +159,6 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
     )
   }
 
-  // Received message from another user — show name label above bubble
   return (
     <div className="flex items-end gap-2 px-3 mb-0.5 im-bubble-wrap">
       <div className="im-avatar im-avatar-user flex-shrink-0">{initials}</div>
@@ -141,10 +174,13 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
           {displayName}
         </span>
         <div className="relative">
-          <div className="im-bubble im-bubble-received">{message.text}</div>
+          <div className={`im-bubble im-bubble-received ${message.imageUrl ? 'im-bubble-media' : ''}`}>
+            {renderImageContent(message)}
+          </div>
           <div className="im-bubble-received-clear" />
         </div>
         {relativeTime && <span style={timestampStyle}>{relativeTime}</span>}
+        {imageStatus}
       </div>
     </div>
   )

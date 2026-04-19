@@ -1,16 +1,31 @@
 // Main chat page: owns message state, manages SSE subscription, and composes all chat UI components.
 // Uses the authenticated Firebase user for identity — no more hardcoded TEMP_USER_ID.
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import { signOut } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import type { Message } from '../types/message'
-import { getMessages, sendMessage, createSSEStream, resetTrip } from '../api/client'
+import { createSSEStream, getMessages, resetTrip, sendImageMessage, sendMessage } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import ChatHeader from '../components/ChatHeader'
 import ChatInput from '../components/ChatInput'
 import MessageBubble from '../components/MessageBubble'
 import ProfileDrawer from '../components/ProfileDrawer'
+
+function mergeIncomingMessage(prev: Message[], msg: Message, currentUserId: string): Message[] {
+  const existingIndex = prev.findIndex(item => item.id === msg.id)
+  if (existingIndex >= 0) {
+    const next = [...prev]
+    next[existingIndex] = { ...next[existingIndex], ...msg }
+    return next
+  }
+
+  if (msg.senderId === currentUserId) {
+    return prev
+  }
+
+  return [...prev, msg]
+}
 
 export default function ChatPage() {
   const { tripId } = useParams<{ tripId: string }>()
@@ -18,8 +33,8 @@ export default function ChatPage() {
   const { user, idToken } = useAuth()
   const [messages, setMessages] = useState<Message[]>([])
   const [showProfile, setShowProfile] = useState(false)
+  const [screenshotEnabled, setScreenshotEnabled] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
-  // Refs so SSE closures always read the latest values without re-subscribing
   const currentUserIdRef = useRef('')
   const idTokenRef = useRef<string | null>(null)
 
@@ -29,18 +44,17 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
-  // Load initial messages from backend (requires auth)
   useEffect(() => {
     if (!tripId || !idToken) return
     getMessages(tripId, idToken)
-      .then(({ messages: msgs }) => {
+      .then(({ messages: msgs, features }) => {
         setMessages(msgs)
+        setScreenshotEnabled(Boolean(features?.screenshotProcessingEnabled))
         currentUserIdRef.current = user?.uid ?? ''
       })
       .catch(err => console.error('[ChatPage] initial messages fetch failed:', err))
   }, [tripId, idToken, user?.uid])
 
-  // Keep refs in sync without triggering SSE re-subscription
   useEffect(() => {
     currentUserIdRef.current = currentUserId
   }, [currentUserId])
@@ -49,12 +63,10 @@ export default function ChatPage() {
     idTokenRef.current = idToken
   }, [idToken])
 
-  // Scroll to bottom whenever messages change
   useEffect(() => {
     scrollToBottom()
   }, [messages, scrollToBottom])
 
-  // SSE subscription with auto-reconnect (handles backend starting after frontend)
   useEffect(() => {
     if (!tripId) return
     let source: EventSource
@@ -63,22 +75,14 @@ export default function ChatPage() {
     const connect = () => {
       source = createSSEStream(tripId)
       source.onmessage = (e) => {
-        console.log('[SSE] received:', e.data)
         try {
           const msg: Message = JSON.parse(e.data)
-          console.log('[SSE] parsed:', msg.type, msg.senderId)
-          // Reset signal: sign out and kick all connected clients to the join page
           if (msg.type === 'reset') {
             source.close()
             signOut(auth).finally(() => navigate(`/join/${tripId}`))
             return
           }
-          // Skip own messages — already shown optimistically on send
-          if (msg.senderId === currentUserIdRef.current) {
-            console.log('[SSE] skipped (own message)')
-            return
-          }
-          setMessages(prev => [...prev, msg])
+          setMessages(prev => mergeIncomingMessage(prev, msg, currentUserIdRef.current))
         } catch (err) {
           console.error('[SSE] parse error:', err, '| raw:', e.data)
         }
@@ -86,16 +90,13 @@ export default function ChatPage() {
       source.onerror = (e) => {
         console.error('[SSE] connection error:', e)
         source.close()
-        // Re-fetch the full message list to recover messages sent while disconnected.
-        // Merge with existing state: keep any optimistic messages (temp-* IDs) that the
-        // server hasn't confirmed yet so they don't flicker or disappear on reconnect.
         const token = idTokenRef.current
         if (tripId && token) {
           getMessages(tripId, token)
-            .then(({ messages: serverMsgs }) => {
+            .then(({ messages: serverMsgs, features }) => {
+              setScreenshotEnabled(Boolean(features?.screenshotProcessingEnabled))
               setMessages(prev => {
                 const serverIds = new Set(serverMsgs.map(m => m.id))
-                // Preserve optimistic messages not yet present in the server response
                 const optimistic = prev.filter(m => !serverIds.has(m.id))
                 return [...serverMsgs, ...optimistic]
               })
@@ -111,7 +112,7 @@ export default function ChatPage() {
       source?.close()
       clearTimeout(retryTimer)
     }
-  }, [tripId])
+  }, [tripId, navigate])
 
   const handleReset = useCallback(async () => {
     if (!tripId || !idToken) return
@@ -125,8 +126,6 @@ export default function ChatPage() {
     if (!tripId || !currentUserId || !idToken) return
 
     const senderName = user?.displayName ?? ''
-
-    // Optimistically append the sent message so the UI reacts immediately
     const tempMsg: Message = {
       id: `temp-${Date.now()}`,
       type: 'user',
@@ -140,8 +139,38 @@ export default function ChatPage() {
       await sendMessage(tripId, text, senderName, idToken)
     } catch (err) {
       console.error('[TripMind] send failed:', err)
-      // Roll back optimistic message on failure
       setMessages(prev => prev.filter(m => m.id !== tempMsg.id))
+    }
+  }, [tripId, currentUserId, idToken, user?.displayName])
+
+  const handleSendImage = useCallback(async (file: File, caption: string, clientTempId: string) => {
+    if (!tripId || !currentUserId || !idToken) return
+
+    const senderName = user?.displayName ?? ''
+    const previewUrl = URL.createObjectURL(file)
+    const tempMsg: Message = {
+      id: clientTempId,
+      type: 'user',
+      senderId: currentUserId,
+      senderName,
+      text: caption,
+      imageUrl: previewUrl,
+      imageName: file.name,
+      imageMimeType: file.type,
+      analysisStatus: 'pending',
+      imageAnalysis: null,
+      analysisReplyMessageId: null,
+    }
+    setMessages(prev => [...prev, tempMsg])
+
+    try {
+      const created = await sendImageMessage(tripId, file, caption, senderName, idToken)
+      setMessages(prev => prev.map(msg => (msg.id === clientTempId ? created : msg)))
+    } catch (err) {
+      console.error('[TripMind] image send failed:', err)
+      setMessages(prev => prev.filter(msg => msg.id !== clientTempId))
+    } finally {
+      URL.revokeObjectURL(previewUrl)
     }
   }, [tripId, currentUserId, idToken, user?.displayName])
 
@@ -178,7 +207,7 @@ export default function ChatPage() {
               </div>
               <p className="font-semibold text-black" style={{ fontSize: '15px' }}>Adov</p>
               <p style={{ fontSize: '13px', color: '#8E8E93', maxWidth: '220px', lineHeight: '1.5' }}>
-                Drop a travel link or start chatting.
+                {screenshotEnabled ? 'Drop a travel link, share a screenshot, or start chatting.' : 'Drop a travel link or start chatting.'}
               </p>
             </div>
           </div>
@@ -196,7 +225,11 @@ export default function ChatPage() {
         <div ref={bottomRef} />
       </div>
 
-      <ChatInput onSend={handleSend} />
+      <ChatInput
+        onSend={handleSend}
+        onSendImage={handleSendImage}
+        screenshotEnabled={screenshotEnabled}
+      />
 
       {showProfile && idToken && (
         <ProfileDrawer

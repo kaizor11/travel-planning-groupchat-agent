@@ -7,7 +7,6 @@ Usage:
 """
 import os
 import pytest
-from playwright.sync_api import sync_playwright
 
 BASE_URL = "http://localhost:5173"
 SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "screenshots")
@@ -28,6 +27,8 @@ def pytest_addoption(parser):
 
 @pytest.fixture(scope="session")
 def _playwright():
+    from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         yield p
 

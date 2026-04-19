@@ -45,13 +45,43 @@ async function fetchWithAuth(
 export async function getMessages(
   tripId: string,
   idToken: string,
-): Promise<{ messages: Message[]; current_user_id: string; current_user_name: string }> {
+): Promise<{
+  messages: Message[]
+  current_user_id: string
+  current_user_name: string
+  features?: { screenshotProcessingEnabled?: boolean }
+}> {
   const res = await fetchWithAuth(
     `${API_BASE}/api/trips/${tripId}`,
     { headers: { Authorization: `Bearer ${idToken}` } },
     idToken,
   )
   if (!res.ok) throw new Error('Failed to load messages')
+  return res.json()
+}
+
+export async function sendImageMessage(
+  tripId: string,
+  file: File,
+  text: string,
+  senderName: string,
+  idToken: string,
+): Promise<Message> {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('text', text)
+  formData.append('sender_name', senderName)
+
+  const res = await fetchWithAuth(
+    `${API_BASE}/api/trips/${tripId}/messages/image`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${idToken}` },
+      body: formData,
+    },
+    idToken,
+  )
+  if (!res.ok) throw new Error('Failed to send image message')
   return res.json()
 }
 

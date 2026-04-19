@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routes import ai, calendar, chat, debug, proposals, users
+from services.image_embedding.service import validate_startup as validate_image_startup
 
 app = FastAPI(title="Adov")
 
@@ -52,3 +53,4 @@ def check_env_vars() -> None:
             f"Missing required environment variables: {', '.join(missing)}. "
             "Check your .env file or deployment environment."
         )
+    validate_image_startup()
