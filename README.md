@@ -85,13 +85,9 @@ cd frontend && npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
-### 5. Run tests (optional)
+### 5. Activity log (optional)
 
-```bash
-# From adov/
-npm run test           # Playwright + pytest, headless
-npm run test:headed    # Same, with browser visible
-```
+Open [http://localhost:8000/debug](http://localhost:8000/debug).
 
 ---
 
