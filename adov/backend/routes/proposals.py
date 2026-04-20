@@ -148,9 +148,17 @@ def _get_group_budget(trip_id: str) -> dict:
     }
 
 
-def _make_booking_search_url(destination: str, date_from: str, date_to: str, adults: int) -> str:
+def _make_booking_search_url(destination: str, date_from: str, date_to: str, adults: int, origin: str | None = None) -> str:
     """Generate a pre-filled Google Flights search URL for the proposal."""
-    query = f"flights to {destination} {date_from} to {date_to}"
+    def _fmt_date(iso: str) -> str:
+        try:
+            d = datetime.strptime(iso, "%Y-%m-%d")
+            return d.strftime(f"%B {d.day}, %Y")
+        except ValueError:
+            return iso
+
+    from_part = f"from {origin} " if origin else ""
+    query = f"flights {from_part}to {destination} {_fmt_date(date_from)} to {_fmt_date(date_to)}"
     return (
         "https://www.google.com/travel/flights?hl=en&q="
         + urllib.parse.quote(query)
@@ -158,10 +166,10 @@ def _make_booking_search_url(destination: str, date_from: str, date_to: str, adu
     )
 
 
-def _fetch_flight_estimates(trip_id: str, destinations: list[str], outbound_date: str, adults: int) -> dict[str, int | None]:
+def _fetch_flight_estimates(trip_id: str, destinations: list[str], outbound_date: str, adults: int) -> tuple[dict[str, int | None], list[str]]:
     """
     For each destination, find the cheapest flight from any member's homeAirport.
-    Returns a dict mapping destination → cheapest price (or None).
+    Returns (estimates dict, home_airports list).
     """
     member_ids = get_trip_members(trip_id)
     home_airports: list[str] = []
@@ -171,7 +179,7 @@ def _fetch_flight_estimates(trip_id: str, destinations: list[str], outbound_date
             home_airports.append(user["homeAirport"])
 
     if not home_airports:
-        return {dest: None for dest in destinations}
+        return {dest: None for dest in destinations}, []
 
     estimates: dict[str, int | None] = {}
     for dest in destinations:
@@ -187,7 +195,7 @@ def _fetch_flight_estimates(trip_id: str, destinations: list[str], outbound_date
                 prices.append(price)
         estimates[dest] = min(prices) if prices else None
 
-    return estimates
+    return estimates, home_airports
 
 
 def _pick_outbound_date(windows: list[dict]) -> str:
@@ -237,6 +245,7 @@ def _declare_winning_destination(trip_id: str, proposals: list[dict], member_cou
         )
 
     add_message(trip_id, {"senderId": "ai", "text": ai_text, "type": "ai"})
+    log_event("ai_reply", trip_id=trip_id, preview=ai_text[:80])
 
 
 # ── Shared proposal generation core (used by REST endpoint and @adov trigger) ──
@@ -266,17 +275,12 @@ async def _run_proposal_generation(trip_id: str, force: bool = False) -> dict:
     # Aggregate wishpool entries by destination and filter to strict-majority-accepted ones
     aggregated = _aggregate_destinations(wish_pool, member_count)
     if not aggregated:
-        add_message(
-            trip_id,
-            {
-                "senderId": "ai",
-                "text": (
-                    "No destinations have enough votes yet. "
-                    "Share travel links and have the group click Add to build up the wish pool."
-                ),
-                "type": "ai",
-            },
+        _nudge = (
+            "No destinations have enough votes yet. "
+            "Share travel links and have the group click Add to build up the wish pool."
         )
+        add_message(trip_id, {"senderId": "ai", "text": _nudge, "type": "ai"})
+        log_event("ai_reply", trip_id=trip_id, preview=_nudge[:80])
         return {"ok": False, "reason": "no_qualified_destinations"}
 
     # Pre-flight readiness check: warn about missing budget / calendar (skipped when force=True)
@@ -295,17 +299,12 @@ async def _run_proposal_generation(trip_id: str, force: bool = False) -> dict:
                 f"(tap Profile → Google Calendar → Connect)"
             )
         if parts:
-            add_message(
-                trip_id,
-                {
-                    "senderId": "ai",
-                    "text": (
-                        "Before I generate proposals: " + " and ".join(parts) + ".\n"
-                        'To generate with the info I have now, say "@adov generate anyway".'
-                    ),
-                    "type": "ai",
-                },
+            _readiness_msg = (
+                "Before I generate proposals: " + " and ".join(parts) + ".\n"
+                'To generate with the info I have now, say "@adov generate anyway".'
             )
+            add_message(trip_id, {"senderId": "ai", "text": _readiness_msg, "type": "ai"})
+            log_event("ai_reply", trip_id=trip_id, preview=_readiness_msg[:80])
             return {"ok": False, "reason": "missing_data", "details": readiness}
 
     windows: list[dict] = (trip or {}).get("availableWindows", [])
@@ -315,14 +314,17 @@ async def _run_proposal_generation(trip_id: str, force: bool = False) -> dict:
 
     # Fetch real flight prices from SerpAPI if members have home airports set
     destinations_to_check = [d["destination"] for d in aggregated]
+    home_airports: list[str] = []
     try:
-        flight_estimates = await loop.run_in_executor(
+        flight_estimates, home_airports = await loop.run_in_executor(
             None,
             lambda: _fetch_flight_estimates(trip_id, destinations_to_check, outbound_date, member_count),
         )
     except Exception as exc:
         logger.warning(f"[proposals] flight estimate error (non-fatal): {exc}")
         flight_estimates = {}
+
+    primary_origin = home_airports[0] if home_airports else None
 
     # Call Claude to generate one proposal per aggregated destination
     try:
@@ -348,7 +350,7 @@ async def _run_proposal_generation(trip_id: str, force: bool = False) -> dict:
         date_to = dates.get("end", "")
         destination = p.get("destination", "")
 
-        booking_url = _make_booking_search_url(destination, date_from, date_to, member_count)
+        booking_url = _make_booking_search_url(destination, date_from, date_to, member_count, origin=primary_origin)
 
         proposal_doc = {
             "destination": destination,
@@ -480,6 +482,7 @@ async def cast_vote(
             )
 
     add_message(trip_id, {"senderId": "ai", "text": ai_text, "type": "ai"})
+    log_event("ai_reply", trip_id=trip_id, preview=ai_text[:80])
 
     # When multiple proposals exist, declare the cross-proposal winner once all are fully voted.
     if len(all_proposals) > 1:

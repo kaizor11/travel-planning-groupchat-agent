@@ -224,6 +224,30 @@ export async function castVote(
   return res.json()
 }
 
+// ── Image messages ────────────────────────────────────────────────────────────
+
+export async function sendImageMessage(
+  tripId: string,
+  imageFile: File,
+  caption: string,
+  idToken: string,
+): Promise<Message> {
+  const form = new FormData()
+  form.append('image', imageFile)
+  form.append('caption', caption)
+  // Do NOT set Content-Type — browser fills in the multipart boundary automatically
+  const res = await fetchWithAuth(
+    `${API_BASE}/api/trips/${tripId}/messages/image`,
+    { method: 'POST', headers: { Authorization: `Bearer ${idToken}` }, body: form },
+    idToken,
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { detail?: string }).detail ?? 'Failed to send image')
+  }
+  return res.json()
+}
+
 // ── Demo reset ────────────────────────────────────────────────────────────────
 
 export async function resetTrip(tripId: string, idToken: string): Promise<void> {

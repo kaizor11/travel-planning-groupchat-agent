@@ -1,0 +1,125 @@
+feature_flags:
+  screenshot_processing_enabled: true
+  screenshot_remote_fallback_enabled: false
+
+storage:
+  bucket_env_var: FIREBASE_STORAGE_BUCKET
+  storage_prefix: chat_screenshots
+  sanitize_filenames: true
+
+upload:
+  max_file_size_bytes: 5242880
+  allowed_mime_types:
+    - image/png
+    - image/jpeg
+    - image/webp
+
+local_ocr:
+  grayscale: true
+  max_dimension_px: 1800
+  messages:
+    summary_prefix: "This screenshot looks travel-related."
+    summary_fallback: "I extracted some text from the screenshot, but the content details are limited."
+  keyword_hints:
+    lodging:
+      - hotel
+      - resort
+      - hostel
+      - airbnb
+      - stay
+      - room
+      - suite
+      - guest
+      - check-in
+      - check out
+      - nights
+    transport:
+      - flight
+      - airline
+      - boarding
+      - gate
+      - train
+      - bus
+      - departure
+      - arrival
+      - terminal
+      - route
+      - transfer
+    bookingSignals:
+      - booking
+      - reserve
+      - confirmation
+      - itinerary
+      - checkout
+      - trip
+      - map
+      - ticket
+      - booking.com
+      - expedia
+      - airbnb
+      - google flights
+
+quality:
+  pass_score: 0.58
+  min_width: 240
+  min_height: 240
+  min_text_length: 20
+  min_average_confidence: 0.45
+  min_detected_signal_items: 1
+  weights:
+    dimensions: 0.2
+    text_length: 0.25
+    confidence: 0.25
+    travel_signals: 0.2
+    keyword_bonus: 0.1
+
+remote:
+  api_key_env_var: OPENAI_API_KEY
+  model: gpt-4.1-mini
+  base_url: ""
+  timeout_seconds: 30
+  max_output_tokens: 800
+  prompt: |
+    Analyze this screenshot and return strict JSON only.
+    Do not wrap the response in markdown or commentary.
+    First classify the contentCategory using one of:
+    - "travel_related"
+    - "non_travel_text"
+    - "non_travel_image"
+    - "unknown"
+    Then produce a result that matches that category:
+    - travel_related: provide a travel-focused summary and populate only the travelSignals you can support from the image
+    - non_travel_text: summarize the text-heavy content without forcing a travel interpretation, and use empty arrays for all travelSignals categories
+    - non_travel_image: summarize the photo or image content without forcing a travel interpretation, and use empty arrays for all travelSignals categories
+    - unknown: use a cautious generic summary or null summary, and use empty arrays for all travelSignals categories
+    The JSON object must contain exactly these top-level keys:
+    {
+      "contentCategory": "travel_related"|"non_travel_text"|"non_travel_image"|"unknown",
+      "summary": string|null,
+      "extractedText": string|null,
+      "confidence": number|null,
+      "qualityScore": number|null,
+      "travelSignals": {
+        "locations": [{"value": string, "confidence": number|null}],
+        "dates": [{"value": string, "confidence": number|null}],
+        "prices": [{"value": string, "confidence": number|null}],
+        "lodging": [{"value": string, "confidence": number|null}],
+        "transport": [{"value": string, "confidence": number|null}],
+        "bookingSignals": [{"value": string, "confidence": number|null}]
+      },
+      "error": null
+    }
+    Prefer concise extraction. Use empty arrays for any missing travelSignals category.
+    Do not invent travel signals when the content is unrelated to travel.
+
+reply:
+  fallback_summary: "I reviewed the screenshot and pulled out the most likely details."
+  extracted_text_label: "Text"
+  section_labels:
+    locations: "Locations"
+    dates: "Dates"
+    prices: "Prices"
+    lodging: "Lodging"
+    transport: "Transport"
+    bookingSignals: "Booking"
+  extracted_text_preview_chars: 220

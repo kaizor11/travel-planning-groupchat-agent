@@ -123,6 +123,7 @@ async def send_message(
 
     # Cue 2: @adov mention — check if proposing trips or just chatting
     if MENTION_REGEX.search(text):
+        log_event("adov_mention", trip_id=trip_id, user_id=uid, preview=text[:80])
         if PROPOSAL_TRIGGER_REGEX.search(text):
             # Proposal trigger: generate structured trip proposals
             await handle_proposal_request(trip_id, sender_name, trigger_text=text)

@@ -68,6 +68,9 @@ _HTML = """<!DOCTYPE html>
   .ev-wishpool_added      { color: #56d364; }
   .ev-travel_content_parsed { color: #d2a8ff; }
   .ev-proposals_generated { color: #ffa657; }
+  .ev-adov_mention        { color: #ff7b72; }
+  .ev-image_uploaded      { color: #e3b341; }
+  .ev-image_analyzed      { color: #f0883e; }
   .detail { color: #8b949e; word-break: break-word; }
   #empty { color: #484f58; padding: 20px 8px; }
 </style>

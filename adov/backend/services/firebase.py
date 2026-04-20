@@ -33,8 +33,9 @@ def _get_app() -> firebase_admin.App:
             "token_uri": "https://oauth2.googleapis.com/token",
         }
     )
+    options: dict = {}
     try:
-        _app = firebase_admin.initialize_app(cred)
+        _app = firebase_admin.initialize_app(cred, options)
     except Exception as exc:
         # Re-raise without chaining so credential values don't appear in tracebacks/logs
         raise RuntimeError(f"Firebase init failed: {type(exc).__name__}") from None
@@ -369,6 +370,74 @@ def record_vote(trip_id: str, proposal_id: str, user_id: str, vote: str) -> None
 
 # ── SSE streaming ─────────────────────────────────────────────────────────────
 
+# ── Image message helpers ─────────────────────────────────────────────────────
+
+def reserve_message_id(trip_id: str) -> str:
+    """Allocate a Firestore doc ID without writing yet."""
+    ref = get_db().collection("trips").document(trip_id).collection("messages").document()
+    return ref.id
+
+
+def create_message_with_id(trip_id: str, message_id: str, payload: dict) -> dict:
+    """Write a message at a pre-reserved doc ID and return the payload with its id."""
+    ref = (
+        get_db()
+        .collection("trips")
+        .document(trip_id)
+        .collection("messages")
+        .document(message_id)
+    )
+    data = _omit_none({**payload, "timestamp": firestore.SERVER_TIMESTAMP})
+    ref.set(data)
+    return {**payload, "id": message_id}
+
+
+def get_message(trip_id: str, message_id: str) -> dict | None:
+    """Fetch a single message by ID; returns None if not found."""
+    doc = (
+        get_db()
+        .collection("trips")
+        .document(trip_id)
+        .collection("messages")
+        .document(message_id)
+        .get()
+    )
+    if not doc.exists:
+        return None
+    return _doc_to_dict(doc)
+
+
+def finalize_image_message_success(
+    trip_id: str,
+    message_id: str,
+    image_analysis: dict,
+    reply_text: str,
+) -> None:
+    """Mark an image message completed and write the AI summary as a follow-up message."""
+    db = get_db()
+    reply_id = add_message(trip_id, {"senderId": "ai", "type": "ai", "text": reply_text})
+    db.collection("trips").document(trip_id).collection("messages").document(message_id).update(
+        _omit_none({
+            "analysisStatus": "completed",
+            "imageAnalysis": image_analysis,
+            "analysisReplyMessageId": reply_id,
+        })
+    )
+
+
+def finalize_image_message_failure(
+    trip_id: str,
+    message_id: str,
+    image_analysis: dict,
+) -> None:
+    """Mark an image message as failed with the analysis error details."""
+    get_db().collection("trips").document(trip_id).collection("messages").document(message_id).update(
+        _omit_none({"analysisStatus": "failed", "imageAnalysis": image_analysis})
+    )
+
+
+# ── SSE streaming ─────────────────────────────────────────────────────────────
+
 async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
     """
     Polls Firestore every second for new messages and yields raw SSE-formatted strings.
@@ -387,6 +456,8 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
         last_ts = None  # raw Firestore timestamp for incremental filtering
 
         # Pre-populate seen_ids and capture the latest timestamp for incremental queries
+        # Also track any messages with analysisStatus="pending" so we can stream updates.
+        pending_image_statuses: dict[str, str] = {}
         try:
             initial = await loop.run_in_executor(
                 None,
@@ -397,10 +468,13 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
             )
             for doc in initial:
                 seen_ids.add(doc.id)
-                raw_ts = (doc.to_dict() or {}).get("timestamp")
+                d = doc.to_dict() or {}
+                raw_ts = d.get("timestamp")
                 if raw_ts is not None:
                     last_ts = raw_ts
-            logger.info(f"[SSE] pre-populated {len(seen_ids)} seen IDs, last_ts={last_ts}")
+                if d.get("analysisStatus") == "pending":
+                    pending_image_statuses[doc.id] = "pending"
+            logger.info(f"[SSE] pre-populated {len(seen_ids)} seen IDs, last_ts={last_ts}, pending_images={len(pending_image_statuses)}")
         except Exception as exc:
             logger.warning(f"[SSE] initial fetch error: {exc}")
 
@@ -423,11 +497,14 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
 
                 docs = await loop.run_in_executor(None, fetch_new)
                 for doc in docs:
+                    d = doc.to_dict() or {}
                     if doc.id not in seen_ids:
                         seen_ids.add(doc.id)
-                        raw_ts = (doc.to_dict() or {}).get("timestamp")
+                        raw_ts = d.get("timestamp")
                         if raw_ts is not None:
                             last_ts = raw_ts
+                        if d.get("analysisStatus") == "pending":
+                            pending_image_statuses[doc.id] = "pending"
                         data = _doc_to_dict(doc)
                         try:
                             payload = json.dumps(data)
@@ -435,6 +512,26 @@ async def stream_messages(trip_id: str) -> AsyncGenerator[str, None]:
                             yield f"data: {payload}\n\n"
                         except (TypeError, ValueError) as exc:
                             logger.warning(f"[SSE] serialization error (message skipped): {exc}")
+
+                # Stream status updates for pending image messages
+                for msg_id in list(pending_image_statuses):
+                    updated_doc = await loop.run_in_executor(
+                        None,
+                        lambda mid=msg_id: db.collection("trips").document(trip_id).collection("messages").document(mid).get(),
+                    )
+                    if updated_doc.exists:
+                        updated_data = _doc_to_dict(updated_doc)
+                        new_status = updated_data.get("analysisStatus", "")
+                        if new_status != pending_image_statuses[msg_id]:
+                            logger.debug(f"[SSE] image status update {msg_id}: {pending_image_statuses[msg_id]} -> {new_status}")
+                            del pending_image_statuses[msg_id]
+                            try:
+                                yield f"data: {json.dumps(updated_data)}\n\n"
+                            except (TypeError, ValueError) as exc:
+                                logger.warning(f"[SSE] serialization error on status update (skipped): {exc}")
+                    else:
+                        del pending_image_statuses[msg_id]
+
             except Exception as exc:
                 logger.error(f"[SSE] poll error for trip={trip_id}: {exc}", exc_info=True)
                 yield f"event: error\ndata: {json.dumps({'message': 'stream error'})}\n\n"

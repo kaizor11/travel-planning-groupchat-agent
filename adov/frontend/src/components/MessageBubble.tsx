@@ -1,6 +1,7 @@
 // Renders a single chat message as a sent (blue), received (gray), or AI (purple) bubble.
 // Received messages show the sender's name above the bubble for multi-user attribution.
 // Timestamps are displayed below each bubble as relative time (e.g. "2m ago").
+// Messages with imageName show either a thumbnail (during optimistic send) or a file badge.
 import ReactMarkdown from 'react-markdown'
 import type { Message } from '../types/message'
 import WishPoolCard from './WishPoolCard'
@@ -38,7 +39,6 @@ function formatRelativeTime(ts: string | undefined): string | null {
   const diffDays = Math.floor(diffHours / 24)
   if (diffDays === 1) return 'Yesterday'
   if (diffDays < 7) return `${diffDays}d ago`
-  // Older than a week — show date
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 }
 
@@ -47,6 +47,48 @@ const timestampStyle: React.CSSProperties = {
   color: '#AEAEB2',
   marginTop: '2px',
   paddingLeft: '4px',
+}
+
+function AnalysisBadge({ status }: { status: string | undefined }) {
+  if (!status) return null
+  if (status === 'pending') {
+    return (
+      <span style={{ opacity: 0.65, fontStyle: 'italic', display: 'block', marginTop: 4 }}>
+        Analyzing…
+      </span>
+    )
+  }
+  if (status === 'completed') {
+    return (
+      <span style={{ opacity: 0.65, display: 'block', marginTop: 4 }}>
+        Analyzed
+      </span>
+    )
+  }
+  return (
+    <span style={{ opacity: 0.8, display: 'block', marginTop: 4 }}>
+      Could not analyze image
+    </span>
+  )
+}
+
+function ImageAttachment({ imageUrl, imageName, analysisStatus }: { imageUrl?: string; imageName?: string; analysisStatus?: string }) {
+  return (
+    <div style={{ marginBottom: 4 }}>
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt="shared screenshot"
+          style={{ maxWidth: '100%', borderRadius: 10, display: 'block' }}
+        />
+      ) : (
+        <div style={{ opacity: 0.85, marginBottom: 2 }}>
+          Image uploaded: {imageName ?? 'Image'}
+        </div>
+      )}
+      <AnalysisBadge status={analysisStatus} />
+    </div>
+  )
 }
 
 export default function MessageBubble({ message, currentUserId, tripId, idToken }: MessageBubbleProps) {
@@ -101,7 +143,12 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
       <div className="flex justify-end px-3 mb-0.5 im-bubble-wrap">
         <div className="flex flex-col items-end">
           <div className="relative">
-            <div className="im-bubble im-bubble-sent">{message.text}</div>
+            <div className="im-bubble im-bubble-sent">
+              {(message.imageUrl || message.imageName) && (
+                <ImageAttachment imageUrl={message.imageUrl} imageName={message.imageName} analysisStatus={message.analysisStatus} />
+              )}
+              {message.text}
+            </div>
             <div className="im-bubble-sent-clear" />
           </div>
           {relativeTime && <span style={{ ...timestampStyle, paddingRight: '4px', paddingLeft: 0 }}>{relativeTime}</span>}
@@ -141,7 +188,12 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
           {displayName}
         </span>
         <div className="relative">
-          <div className="im-bubble im-bubble-received">{message.text}</div>
+          <div className="im-bubble im-bubble-received">
+            {(message.imageUrl || message.imageName) && (
+              <ImageAttachment imageUrl={message.imageUrl} imageName={message.imageName} analysisStatus={message.analysisStatus} />
+            )}
+            {message.text}
+          </div>
           <div className="im-bubble-received-clear" />
         </div>
         {relativeTime && <span style={timestampStyle}>{relativeTime}</span>}

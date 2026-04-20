@@ -5,7 +5,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { signOut } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import type { Message } from '../types/message'
-import { getMessages, sendMessage, createSSEStream, resetTrip } from '../api/client'
+import { getMessages, sendMessage, sendImageMessage, createSSEStream, resetTrip } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 import ChatHeader from '../components/ChatHeader'
 import ChatInput from '../components/ChatInput'
@@ -78,7 +78,15 @@ export default function ChatPage() {
             console.log('[SSE] skipped (own message)')
             return
           }
-          setMessages(prev => [...prev, msg])
+          setMessages(prev => {
+            const idx = prev.findIndex(m => m.id === msg.id)
+            if (idx >= 0) {
+              const updated = [...prev]
+              updated[idx] = { ...updated[idx], ...msg }
+              return updated
+            }
+            return [...prev, msg]
+          })
         } catch (err) {
           console.error('[SSE] parse error:', err, '| raw:', e.data)
         }
@@ -145,6 +153,37 @@ export default function ChatPage() {
     }
   }, [tripId, currentUserId, idToken, user?.displayName])
 
+  const handleSendImage = useCallback(async (file: File, caption: string) => {
+    if (!tripId || !currentUserId || !idToken) return
+
+    const senderName = user?.displayName ?? ''
+    const tempId = `temp-${Date.now()}`
+    const previewUrl = URL.createObjectURL(file)
+
+    // Optimistic message with local blob preview (imageUrl is revoked after server confirms)
+    const tempMsg: Message = {
+      id: tempId,
+      type: 'user',
+      senderId: currentUserId,
+      senderName,
+      text: caption,
+      imageUrl: previewUrl,
+      analysisStatus: 'pending',
+    }
+    setMessages(prev => [...prev, tempMsg])
+
+    try {
+      const saved = await sendImageMessage(tripId, file, caption, idToken)
+      // Replace optimistic message with confirmed one from server
+      setMessages(prev => prev.map(m => m.id === tempId ? saved : m))
+    } catch (err) {
+      console.error('[ChatPage] image send failed:', err)
+      setMessages(prev => prev.filter(m => m.id !== tempId))
+    } finally {
+      URL.revokeObjectURL(previewUrl)
+    }
+  }, [tripId, currentUserId, idToken, user?.displayName])
+
   if (!tripId) return null
 
   return (
@@ -196,7 +235,7 @@ export default function ChatPage() {
         <div ref={bottomRef} />
       </div>
 
-      <ChatInput onSend={handleSend} />
+      <ChatInput onSend={handleSend} onSendImage={handleSendImage} />
 
       {showProfile && idToken && (
         <ProfileDrawer

@@ -2,6 +2,17 @@
 
 export type MessageType = 'user' | 'ai' | 'wishpool_confirm' | 'vote' | 'proposal' | 'reset'
 
+export interface ImageAnalysis {
+  processor: 'local_ocr' | 'openai_vision'
+  contentCategory: 'travel_related' | 'non_travel_text' | 'non_travel_image' | 'unknown'
+  summary?: string
+  extractedText?: string
+  confidence?: number
+  qualityScore?: number
+  travelSignals?: Record<string, { value: string; confidence: number | null }[]>
+  error?: string
+}
+
 export interface ParsedData {
   destination: string
   tags: string[]
@@ -31,4 +42,10 @@ export interface Message {
   attachedUrl?: string
   parsedData?: ParsedData
   proposalsData?: ProposalData[]
+  imageUrl?: string   // local blob URL only — never returned by backend, used for optimistic preview
+  imageMimeType?: string
+  imageName?: string
+  analysisStatus?: 'pending' | 'completed' | 'failed'
+  imageAnalysis?: ImageAnalysis
+  analysisReplyMessageId?: string
 }

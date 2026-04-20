@@ -7,7 +7,7 @@ load_dotenv()  # Must run before firebase/anthropic imports
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routes import ai, calendar, chat, debug, proposals, users
+from routes import ai, calendar, chat, debug, images, proposals, users
 
 app = FastAPI(title="Adov")
 
@@ -26,6 +26,7 @@ app.add_middleware(
 
 app.include_router(chat.router)
 app.include_router(ai.router)
+app.include_router(images.router)
 app.include_router(users.router)
 app.include_router(calendar.router)
 app.include_router(proposals.router)
