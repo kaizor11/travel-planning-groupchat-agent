@@ -41,7 +41,7 @@ def find_free_windows(
             for busy_start, busy_end in user_busy
         )
         if all_free:
-            free_windows.append({"start": window_start.isoformat(), "end": window_end.isoformat()})
+            free_windows.append({"start": window_start.strftime("%Y-%m-%d"), "end": window_end.strftime("%Y-%m-%d")})
 
     return free_windows
 

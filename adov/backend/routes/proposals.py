@@ -152,7 +152,7 @@ def _make_booking_search_url(destination: str, date_from: str, date_to: str, adu
     """Generate a pre-filled Google Flights search URL for the proposal."""
     def _fmt_date(iso: str) -> str:
         try:
-            d = datetime.strptime(iso, "%Y-%m-%d")
+            d = datetime.strptime(iso[:10], "%Y-%m-%d")
             return d.strftime(f"%B {d.day}, %Y")
         except ValueError:
             return iso
@@ -346,15 +346,15 @@ async def _run_proposal_generation(trip_id: str, force: bool = False) -> dict:
     proposals_data: list[dict] = []
     for p in proposals_raw:
         dates = p.get("suggestedDates", {})
-        date_from = dates.get("start", "")
-        date_to = dates.get("end", "")
+        date_from = dates.get("start", "")[:10]
+        date_to = dates.get("end", "")[:10]
         destination = p.get("destination", "")
 
         booking_url = _make_booking_search_url(destination, date_from, date_to, member_count, origin=primary_origin)
 
         proposal_doc = {
             "destination": destination,
-            "suggestedDates": dates,
+            "suggestedDates": {"start": date_from, "end": date_to},
             "estimatedCostPerPerson": p.get("estimatedCostPerPerson"),
             "flightEstimate": p.get("flightEstimate"),
             "rationale": p.get("rationale", ""),
