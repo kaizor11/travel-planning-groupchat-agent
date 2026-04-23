@@ -2,6 +2,7 @@
 // Received messages show the sender's name above the bubble for multi-user attribution.
 // Timestamps are displayed below each bubble as relative time (e.g. "2m ago").
 // Messages with imageName show either a thumbnail (during optimistic send) or a file badge.
+import type { ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { Message } from '../types/message'
 import WishPoolCard from './WishPoolCard'
@@ -12,6 +13,26 @@ interface MessageBubbleProps {
   currentUserId: string
   tripId: string
   idToken: string
+}
+
+const URL_PATTERN = /https?:\/\/[^\s]+/g
+
+function renderTextWithLinks(text: string): ReactNode {
+  const parts: React.ReactNode[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  URL_PATTERN.lastIndex = 0
+  while ((match = URL_PATTERN.exec(text)) !== null) {
+    if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index))
+    parts.push(
+      <a key={match.index} href={match[0]} target="_blank" rel="noopener noreferrer">
+        {match[0]}
+      </a>
+    )
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex))
+  return parts.length ? parts : text
 }
 
 function getInitials(name: string | undefined, senderId: string): string {
@@ -147,7 +168,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
               {(message.imageUrl || message.imageName) && (
                 <ImageAttachment imageUrl={message.imageUrl} imageName={message.imageName} analysisStatus={message.analysisStatus} />
               )}
-              {message.text}
+              {renderTextWithLinks(message.text)}
             </div>
             <div className="im-bubble-sent-clear" />
           </div>
@@ -192,7 +213,7 @@ export default function MessageBubble({ message, currentUserId, tripId, idToken 
             {(message.imageUrl || message.imageName) && (
               <ImageAttachment imageUrl={message.imageUrl} imageName={message.imageName} analysisStatus={message.analysisStatus} />
             )}
-            {message.text}
+            {renderTextWithLinks(message.text)}
           </div>
           <div className="im-bubble-received-clear" />
         </div>

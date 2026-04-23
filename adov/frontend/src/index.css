@@ -67,6 +67,8 @@ body {
 .im-bubble-ai ul, .im-bubble-ai ol { margin: 4px 0 6px 16px; padding: 0; }
 .im-bubble-ai li { margin-bottom: 2px; }
 .im-bubble-ai a { color: #cfe7ff; text-decoration: underline; }
+.im-bubble-sent a { color: #ffffff; text-decoration: underline; word-break: break-all; }
+.im-bubble-received a { color: #007AFF; text-decoration: underline; word-break: break-all; }
 
 /* CSS tail triangles */
 .im-bubble-sent::after {
