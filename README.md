@@ -39,6 +39,14 @@ pip install -r requirements.txt
 | `anthropic` | >=0.40.0 | Claude API client |
 | `python-dotenv` | >=1.0.0 | Load `.env` secrets |
 | `python-multipart` | >=0.0.12 | Form data parsing |
+| `sse-starlette` | >=2.1.0 | SSE response helpers (dependency) |
+| `google-api-python-client` | >=2.0.0 | Google Calendar API |
+| `google-auth` | >=2.0.0 | Google OAuth token handling |
+| `requests` | >=2.31.0 | HTTP client (Apify, SerpAPI) |
+| `apify-client` | >=1.6.0 | Instagram reel scraper |
+| `Pillow` | >=10.0.0 | Image preprocessing for screenshot OCR |
+| `openai` | >=1.0.0 | Optional remote image analysis fallback |
+| `PyYAML` | >=6.0 | Image pipeline config loading |
 ### 2. Environment variables
 
 Create `adov/backend/.env`:
@@ -97,4 +105,15 @@ Open [http://localhost:8000/debug](http://localhost:8000/debug).
 | `GET` | `/api/trips/{trip_id}/stream` | SSE real-time message stream |
 | `POST` | `/api/trips/{trip_id}/messages` | Send a message (triggers AI parse if URL) |
 | `POST` | `/api/trips/{trip_id}/wishpool` | Add/skip a wish pool entry |
+| `GET` | `/api/trips/{trip_id}/invite` | Public trip preview for join page |
+| `POST` | `/api/trips/{trip_id}/join` | Add authenticated user to trip |
+| `GET` | `/api/trips/{trip_id}/budget` | Group budget overlap (no per-person data) |
+| `POST` | `/api/trips/{trip_id}/proposals/generate` | Generate AI trip proposals |
+| `GET` | `/api/trips/{trip_id}/proposals` | List proposals with vote counts |
+| `POST` | `/api/trips/{trip_id}/proposals/{id}/vote` | Record a vote (yes/no/maybe) |
 | `POST` | `/api/ai/parse-content` | Parse travel content via Claude |
+| `GET` | `/api/users/me` | Fetch user profile |
+| `PUT` | `/api/users/me` | Update profile (budget, homeAirport, etc.) |
+| `PUT` | `/api/users/me/calendar-token` | Store Google OAuth access token |
+| `POST` | `/api/calendar/freebusy` | Query all members' free/busy windows |
+| `GET` | `/debug` | Activity log viewer |
