@@ -1,7 +1,0 @@
-4.8 add the booking searcher I did push
-
-uses serp api, and local ollama llm. 
-what to have in the future:
-deploy a llm using vllm on cloud.
-refine the setting part
-I think do not make any change yet.
