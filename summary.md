@@ -130,7 +130,7 @@ Each Firestore message has a `type` field that controls how it renders:
 | `ai` | Backend AI tasks | Purple bubble with airplane icon |
 | `wishpool_confirm` | AI (after URL parse) | AI bubble + "Add to wish pool?" card |
 | `proposal` | AI (after @adov proposal trigger) | AI bubble + proposal cards with voting |
-| `vote` | AI (vote progress updates) | Purple bubble with vote tally |
+| `vote` | *(unused — reserved)* | Defined in schema but the backend writes `ai` type for all vote progress messages |
 
 ---
 
@@ -477,21 +477,33 @@ The frontend updates the proposal card optimistically (shows new vote immediatel
 
 All secrets live in `adov/backend/.env`. The app will crash on startup if required vars are missing.
 
-| Variable | What it controls |
-|----------|-----------------|
-| `ANTHROPIC_API_KEY` | All Claude API calls (parsing, proposals, chat responses, preference extraction) |
-| `FIREBASE_ADMIN_PROJECT_ID` | Which Firestore project to read/write |
-| `FIREBASE_ADMIN_CLIENT_EMAIL` | Firebase service account identity |
-| `FIREBASE_ADMIN_PRIVATE_KEY` | Firebase service account credential (multi-line PEM) |
-| `GOOGLE_CLIENT_ID` | Google OAuth (Calendar access) |
-| `GOOGLE_CLIENT_SECRET` | Google OAuth (Calendar access) |
-| `SERPAPI_API_KEY` | Google Flights price lookups |
-| `APIFY_KEY` | Instagram reel scraping |
-| `TASK_URL` | Apify task ID for the Instagram scraper |
-| `FRONTEND_URL` | Production frontend URL (added to CORS allowlist) |
-| `ANTHROPIC_MODEL` | *(optional)* Override the Claude model (defaults to `claude-sonnet-4-6`) |
+**Backend** (`adov/backend/.env`) — all required unless marked optional:
 
-Frontend secrets are prefixed with `VITE_` and are safe to expose to the browser (Firebase client SDK config, not admin credentials).
+| Variable | Required | What it controls |
+|----------|----------|-----------------|
+| `ANTHROPIC_API_KEY` | Yes | All Claude API calls (parsing, proposals, chat responses, preference extraction) |
+| `FIREBASE_ADMIN_PROJECT_ID` | Yes | Which Firestore project to read/write |
+| `FIREBASE_ADMIN_CLIENT_EMAIL` | Yes | Firebase service account identity |
+| `FIREBASE_ADMIN_PRIVATE_KEY` | Yes | Firebase service account credential (multi-line PEM) |
+| `SERPAPI_API_KEY` | Yes | Google Flights price lookups |
+| `APIFY_KEY` | Yes | Instagram reel scraping |
+| `TASK_URL` | Yes | Apify task URL for the Instagram scraper actor |
+| `FRONTEND_URL` | Optional | Production frontend URL added to CORS allowlist (set on Render) |
+| `ANTHROPIC_MODEL` | Optional | Override the Claude model (defaults to `claude-sonnet-4-6`) |
+| `OPENAI_API_KEY` | Optional | Enables remote OpenAI Vision fallback in the image analysis pipeline |
+
+The first seven variables are checked at startup via `@app.on_event("startup")` in `main.py` — missing vars raise a `RuntimeError` with a clear list.
+
+**Frontend** (`adov/frontend/.env`) — prefixed with `VITE_`, safe to expose to the browser (Firebase client SDK config, not admin credentials):
+
+| Variable | Purpose |
+|----------|---------|
+| `VITE_FIREBASE_API_KEY` | Firebase web app key |
+| `VITE_FIREBASE_AUTH_DOMAIN` | Firebase Auth domain |
+| `VITE_FIREBASE_PROJECT_ID` | Firebase project |
+| `VITE_FIREBASE_STORAGE_BUCKET` | Firebase Storage bucket |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | Firebase messaging |
+| `VITE_FIREBASE_APP_ID` | Firebase app ID |
 
 ---
 
